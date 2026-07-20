@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>CanteiroXR — Realidade Aumentada</title>
+<script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.5/aframe/build/aframe-ar.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; overflow: hidden; font-family: system-ui, "Segoe UI", sans-serif; background: #000; }
+  #app { position: fixed; inset: 0; }
+  .bar { position: fixed; left: 0; right: 0; z-index: 30; display: flex; align-items: center; gap: 10px; padding: 10px 14px; }
+  .top { top: 0; padding-top: calc(10px + env(safe-area-inset-top)); background: linear-gradient(180deg, rgba(0,0,0,.55), transparent); color: #fff; }
+  .bottom { bottom: 0; padding-bottom: calc(12px + env(safe-area-inset-bottom)); background: linear-gradient(0deg, rgba(0,0,0,.6), transparent); flex-direction: column; align-items: stretch; gap: 8px; }
+  .back { background: rgba(255,255,255,.15); color: #fff; border: 0; border-radius: 10px; padding: 8px 14px; font-weight: 700; text-decoration: none; font-size: 14px; }
+  .tag { font-size: 12px; opacity: .85; }
+  .cal { background: rgba(15,20,32,.72); backdrop-filter: blur(10px); border-radius: 14px; padding: 10px 14px; color: #fff; }
+  .cal label { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  .cal input[type=range] { width: 100%; accent-color: #1668dc; }
+  .hint { color: #fff; font-size: 13px; text-align: center; background: rgba(0,0,0,.4); border-radius: 20px; padding: 7px 14px; align-self: center; }
+  #status { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #0d1117; color: #9aa7b5; text-align: center; padding: 24px; }
+  #status .sp { width: 42px; height: 42px; border: 4px solid #1e2530; border-top-color: #1668dc; border-radius: 50%; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #status b { color: #e6edf3; }
+  #status a { color: #7fb2ff; }
+</style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div class="bar top">
+    <a class="back" href="./">← Voltar ao app</a>
+    <div><div style="font-weight:800">Realidade Aumentada</div><div class="tag">Aponte para o marcador A4</div></div>
+  </div>
+
+  <div class="bar bottom" id="controls" style="display:none">
+    <div class="hint">Aponte a câmera para a folha do marcador Hiro</div>
+    <div class="cal">
+      <label>Escala (calibrar 1:1) <b id="scaleV"></b></label>
+      <input type="range" id="scale" min="0.5" max="40" step="0.1" />
+      <label style="margin-top:8px">Girar (alinhar) <b id="ryV"></b></label>
+      <input type="range" id="ry" min="0" max="359" step="1" />
+      <button id="tilt" style="margin-top:8px;width:100%;background:#1668dc;color:#fff;border:0;border-radius:10px;padding:9px;font-weight:700;cursor:pointer">Alternar parede / chão</button>
+    </div>
+  </div>
+
+  <div id="status">
+    <div class="sp"></div>
+    <div id="statusText">Carregando o modelo…</div>
+    <div id="statusErr" style="display:none;color:#ff8a80;font-size:13px;max-width:320px"></div>
+  </div>
+
+  <script type="importmap">
+  { "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "web-ifc": "https://cdn.jsdelivr.net/npm/web-ifc@0.0.57/web-ifc-api.js"
+  } }
+  </script>
+  <script type="module">
+    import * as THREE from 'three'
+    import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
+    import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
+    import { IfcAPI } from 'web-ifc'
+
+    const $ = (id) => document.getElementById(id)
+    const fail = (m) => { $('statusText').textContent = 'Não foi possível abrir a RA'; const e = $('statusErr'); e.style.display = 'block'; e.textContent = m }
+
+    function idbGetProject(id) {
+      return new Promise((resolve, reject) => {
+        const r = indexedDB.open('canteiroxr', 1)
+        r.onsuccess = () => {
+          try {
+            const db = r.result
+            const tx = db.transaction('projects', 'readonly')
+            const g = tx.objectStore('projects').get(id)
+            g.onsuccess = () => resolve(g.result)
+            g.onerror = () => reject(g.error)
+          } catch (e) { reject(e) }
+        }
+        r.onerror = () => reject(r.error)
+      })
+    }
+
+    async function main() {
+      const id = new URLSearchParams(location.search).get('id')
+      if (!id) return fail('Nenhum projeto informado. Volte e abra a câmera pelo modo RA.')
+      const project = await idbGetProject(id)
+      if (!project || !project.ifc) return fail('Projeto não encontrado neste dispositivo.')
+
+      const api = new IfcAPI()
+      api.SetWasmPath('https://cdn.jsdelivr.net/npm/web-ifc@0.0.57/', true)
+      await api.Init()
+      const bytes = new Uint8Array(await project.ifc.arrayBuffer())
+      const mid = api.OpenModel(bytes, { COORDINATE_TO_ORIGIN: true })
+
+      const geoms = []
+      api.StreamAllMeshes(mid, (flat) => {
+        const g = flat.geometries
+        for (let i = 0; i < g.size(); i++) {
+          const pg = g.get(i)
+          const geo = api.GetGeometry(mid, pg.geometryExpressID)
+          const v = api.GetVertexArray(geo.GetVertexData(), geo.GetVertexDataSize())
+          const ix = api.GetIndexArray(geo.GetIndexData(), geo.GetIndexDataSize())
+          const n = v.length / 6
+          const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), col = new Float32Array(n * 3)
+          const c = pg.color
+          for (let k = 0; k < n; k++) {
+            pos[k * 3] = v[k * 6]; pos[k * 3 + 1] = v[k * 6 + 1]; pos[k * 3 + 2] = v[k * 6 + 2]
+            nor[k * 3] = v[k * 6 + 3]; nor[k * 3 + 1] = v[k * 6 + 4]; nor[k * 3 + 2] = v[k * 6 + 5]
+            col[k * 3] = c.x; col[k * 3 + 1] = c.y; col[k * 3 + 2] = c.z
+          }
+          const bg = new THREE.BufferGeometry()
+          bg.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+          bg.setAttribute('normal', new THREE.BufferAttribute(nor, 3))
+          bg.setAttribute('color', new THREE.BufferAttribute(col, 3))
+          bg.setIndex(new THREE.BufferAttribute(ix.slice(), 1))
+          bg.applyMatrix4(new THREE.Matrix4().fromArray(pg.flatTransformation))
+          geoms.push(bg)
+          geo.delete()
+        }
+      })
+      if (!geoms.length) return fail('Modelo sem geometria.')
+
+      const merged = mergeGeometries(geoms, false)
+      const a = project.arAnchor
+      if (a && a.pos) merged.translate(-a.pos[0], -a.pos[1], -a.pos[2]) // âncora vai p/ a origem (sobre o marcador)
+      const mesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, metalness: 0, roughness: 0.9 }))
+
+      const exporter = new GLTFExporter()
+      const glb = await new Promise((res, rej) => exporter.parse(mesh, res, rej, { binary: true }))
+      const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }))
+
+      const heading = a ? (a.heading || 0) : 0
+      let scale = parseFloat(localStorage.getItem('ar.scale') || '6.67')
+      // rx: -90 = marcador na PAREDE (folha vertical) · 0 = marcador no CHÃO
+      let rx = parseFloat(localStorage.getItem('ar.rx') || '-90')
+      let ry = parseFloat(localStorage.getItem('ar.ry') || String(Math.round(heading)))
+
+      const applyModel = () => {
+        const m = document.getElementById('model')
+        if (!m) return
+        m.setAttribute('scale', scale + ' ' + scale + ' ' + scale)
+        m.setAttribute('rotation', rx + ' ' + ry + ' 0')
+      }
+
+      $('app').innerHTML =
+        '<a-scene embedded vr-mode-ui="enabled: false" renderer="colorManagement: true"' +
+        ' arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono; trackingMethod: best">' +
+        '  <a-marker preset="hiro">' +
+        '    <a-entity id="model" gltf-model="' + url + '"' +
+        '      position="0 0 0" rotation="' + rx + ' ' + ry + ' 0" scale="' + scale + ' ' + scale + ' ' + scale + '"></a-entity>' +
+        '  </a-marker>' +
+        '  <a-entity camera></a-entity>' +
+        '</a-scene>'
+
+      $('status').style.display = 'none'
+      $('controls').style.display = 'flex'
+
+      const sl = $('scale'); sl.value = scale; $('scaleV').textContent = scale.toFixed(1) + '×'
+      sl.oninput = (e) => { scale = parseFloat(e.target.value); $('scaleV').textContent = scale.toFixed(1) + '×'; localStorage.setItem('ar.scale', String(scale)); applyModel() }
+
+      const ryEl = $('ry'); ryEl.value = ry; $('ryV').textContent = Math.round(ry) + '°'
+      ryEl.oninput = (e) => { ry = parseFloat(e.target.value); $('ryV').textContent = Math.round(ry) + '°'; localStorage.setItem('ar.ry', String(ry)); applyModel() }
+
+      $('tilt').onclick = () => { rx = (rx === 0 ? -90 : 0); localStorage.setItem('ar.rx', String(rx)); applyModel() }
+    }
+
+    main().catch((e) => { console.error(e); fail(e && e.message ? e.message : String(e)) })
+  </script>
+</body>
+</html>

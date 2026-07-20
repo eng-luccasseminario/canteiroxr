@@ -1,0 +1,41 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 32% 8%;
+    --foreground: 210 20% 96%;
+    --card: 222 28% 11%;
+    --card-foreground: 210 20% 96%;
+    --primary: 214 84% 56%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 217 24% 18%;
+    --secondary-foreground: 210 20% 92%;
+    --muted: 217 24% 16%;
+    --muted-foreground: 215 16% 62%;
+    --accent: 214 84% 56%;
+    --accent-foreground: 210 40% 98%;
+    --border: 217 24% 20%;
+    --input: 217 24% 20%;
+    --ring: 214 84% 56%;
+    --radius: 0.85rem;
+  }
+
+  * { @apply border-border; -webkit-tap-highlight-color: transparent; }
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-background text-foreground antialiased;
+    margin: 0;
+    overflow: hidden;
+    font-family: Inter, system-ui, "Segoe UI", sans-serif;
+    overscroll-behavior: none;
+  }
+}
+
+/* utilidades de app imersivo */
+.safe-top { padding-top: env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+.no-select { user-select: none; -webkit-user-select: none; }
+.glass { background: hsl(222 28% 11% / 0.72); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }

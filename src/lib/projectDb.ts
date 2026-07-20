@@ -1,0 +1,79 @@
+// Persistência local (IndexedDB) dos projetos: modelo IFC + pinos 360 + vistas salvas.
+// Blobs (IFC e fotos 360) são guardados direto no IndexedDB, sem servidor.
+
+export interface SavedView {
+  px: number; py: number; pz: number   // posição da câmera
+  tx: number; ty: number; tz: number   // alvo (para onde olha)
+}
+export interface Pin {
+  id: string
+  name: string
+  pos: [number, number, number]  // ponto no modelo onde o pino está fixado
+  view: SavedView                // vista salva do modelo
+  thumb: string                  // miniatura da vista (dataURL JPEG)
+  pano: Blob                     // foto 360 equiretangular
+}
+export interface ArAnchor {
+  pos: [number, number, number]  // ponto do modelo onde a folha A4 fica fixada
+  heading: number                // giro em torno da vertical (graus)
+}
+export interface Project {
+  id: string
+  name: string
+  ifc: Blob                      // arquivo IFC do modelo
+  pins: Pin[]
+  arAnchor?: ArAnchor            // âncora do marcador A4 (Realidade Aumentada)
+  updatedAt: number
+}
+export interface ProjectMeta {
+  id: string; name: string; updatedAt: number; pinCount: number; cover?: string
+}
+
+const DB = "canteiroxr"
+const STORE = "projects"
+const VER = 1
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB, VER)
+    req.onupgradeneeded = () => {
+      const db = req.result
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: "id" })
+    }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+function tx<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+  return openDb().then(
+    (db) =>
+      new Promise<T>((resolve, reject) => {
+        const t = db.transaction(STORE, mode)
+        const req = fn(t.objectStore(STORE))
+        req.onsuccess = () => resolve(req.result)
+        req.onerror = () => reject(req.error)
+      })
+  )
+}
+
+export function saveProject(p: Project): Promise<IDBValidKey> {
+  p.updatedAt = Date.now()
+  return tx("readwrite", (s) => s.put(p))
+}
+export function getProject(id: string): Promise<Project | undefined> {
+  return tx<Project | undefined>("readonly", (s) => s.get(id) as IDBRequest<Project | undefined>)
+}
+export function deleteProject(id: string): Promise<undefined> {
+  return tx<undefined>("readwrite", (s) => s.delete(id) as IDBRequest<undefined>)
+}
+export async function listProjects(): Promise<ProjectMeta[]> {
+  const all = await tx<Project[]>("readonly", (s) => s.getAll() as IDBRequest<Project[]>)
+  return all
+    .map((p) => ({ id: p.id, name: p.name, updatedAt: p.updatedAt, pinCount: p.pins.length, cover: p.pins[0]?.thumb }))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+export function newId(): string {
+  return (crypto as Crypto & { randomUUID?: () => string }).randomUUID?.() ?? "id-" + Date.now() + "-" + Math.floor(Math.random() * 1e6)
+}

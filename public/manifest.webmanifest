@@ -1,0 +1,13 @@
+{
+  "name": "CanteiroXR — RV & 360°",
+  "short_name": "CanteiroXR",
+  "description": "Realidade Virtual (IFC) e Ambientes 360° para engenharia civil, com VR Box.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0e1420",
+  "theme_color": "#0e1420",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
