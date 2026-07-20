@@ -46,9 +46,13 @@
   </div>
 
   <div id="status">
-    <div class="sp"></div>
+    <div class="sp" id="spin"></div>
     <div id="statusText">Carregando o modelo…</div>
     <div id="statusErr" style="display:none;color:#ff8a80;font-size:13px;max-width:320px"></div>
+    <div id="statusBtns" style="display:none;gap:10px">
+      <button onclick="location.reload()" style="background:#1668dc;color:#fff;border:0;border-radius:10px;padding:10px 18px;font-weight:700;cursor:pointer">Tentar novamente</button>
+      <a href="./" style="background:rgba(255,255,255,.15);color:#fff;border-radius:10px;padding:10px 18px;font-weight:700;text-decoration:none">Voltar ao app</a>
+    </div>
   </div>
 
   <script type="importmap">
@@ -65,22 +69,46 @@
     import { IfcAPI } from 'web-ifc'
 
     const $ = (id) => document.getElementById(id)
-    const fail = (m) => { $('statusText').textContent = 'Não foi possível abrir a RA'; const e = $('statusErr'); e.style.display = 'block'; e.textContent = m }
+    const fail = (m) => {
+      $('spin').style.display = 'none'
+      $('statusText').textContent = 'Não foi possível abrir a RA'
+      const e = $('statusErr'); e.style.display = 'block'; e.textContent = m
+      const b = $('statusBtns'); b.style.display = 'flex'
+    }
 
-    function idbGetProject(id) {
+    // Abre o IndexedDB com timeout (iOS às vezes não dispara evento algum)
+    function openDbOnce() {
       return new Promise((resolve, reject) => {
-        const r = indexedDB.open('canteiroxr', 1)
-        r.onsuccess = () => {
-          try {
-            const db = r.result
-            const tx = db.transaction('projects', 'readonly')
-            const g = tx.objectStore('projects').get(id)
+        let done = false
+        let req
+        try { req = indexedDB.open('canteiroxr', 1) } catch (e) { return reject(e) }
+        req.onsuccess = () => { done = true; resolve(req.result) }
+        req.onerror = () => { done = true; reject(req.error || new Error('open error')) }
+        req.onblocked = () => { done = true; reject(new Error('blocked')) }
+        setTimeout(() => { if (!done) reject(new Error('timeout ao abrir o banco')) }, 3000)
+      })
+    }
+    // Leitura robusta: tenta várias vezes (contorna "Unable to open database file on disk" no iOS)
+    async function idbGetProject(id) {
+      let lastErr
+      for (let i = 0; i < 6; i++) {
+        try {
+          const db = await openDbOnce()
+          if (!db.objectStoreNames.contains('projects')) { db.close(); throw new Error('Nenhum projeto salvo neste dispositivo.') }
+          const result = await new Promise((resolve, reject) => {
+            const g = db.transaction('projects', 'readonly').objectStore('projects').get(id)
             g.onsuccess = () => resolve(g.result)
             g.onerror = () => reject(g.error)
-          } catch (e) { reject(e) }
+          })
+          db.close()
+          return result
+        } catch (e) {
+          lastErr = e
+          $('statusText').textContent = 'Preparando o banco de dados… (' + (i + 1) + ')'
+          await new Promise((r) => setTimeout(r, 350 + i * 250))
         }
-        r.onerror = () => reject(r.error)
-      })
+      }
+      throw lastErr || new Error('Falha ao abrir o banco de dados.')
     }
 
     async function main() {

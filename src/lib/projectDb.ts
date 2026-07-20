@@ -53,6 +53,9 @@ function tx<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBReque
         const req = fn(t.objectStore(STORE))
         req.onsuccess = () => resolve(req.result)
         req.onerror = () => reject(req.error)
+        // libera a conexão após a transação (evita lock ao abrir o banco no ar.html/iOS)
+        t.oncomplete = () => db.close()
+        t.onabort = () => db.close()
       })
   )
 }
