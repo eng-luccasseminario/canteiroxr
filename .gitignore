@@ -31,3 +31,7 @@ dist-ssr
 # TypeScript build info e temporários
 *.tsbuildinfo
 _*.mjs
+
+# Vercel
+.vercel
+.env.local
