@@ -4,7 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 <title>CanteiroXR — Realidade Aumentada</title>
-<script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+<!-- IMPORTANTE: A-Frame 1.3.0 é a versão compatível com AR.js 3.4.x (1.5.0 quebra a câmera). -->
+<script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.5/aframe/build/aframe-ar.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -24,6 +25,10 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   #status b { color: #e6edf3; }
   #status a { color: #7fb2ff; }
+  .primary { display: inline-flex; align-items: center; gap: 8px; background: #1668dc; color: #fff; border: 0; border-radius: 12px; padding: 14px 22px; font-weight: 800; font-size: 16px; cursor: pointer; }
+  .cam-ico { width: 22px; height: 22px; }
+  #camErr { display: none; color: #ff8a80; font-size: 13px; max-width: 320px; }
+  #loadHint { font-size: 12px; opacity: .8; }
 </style>
 </head>
 <body>
@@ -47,7 +52,14 @@
 
   <div id="status">
     <div class="sp" id="spin"></div>
-    <div id="statusText">Carregando o modelo…</div>
+    <div id="statusText">Preparando…</div>
+    <!-- Botão que ABRE A CÂMERA num gesto do usuário (obrigatório no iOS) -->
+    <button id="camBtn" class="primary" style="display:none">
+      <svg class="cam-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      Ativar câmera
+    </button>
+    <div id="loadHint"></div>
+    <div id="camErr"></div>
     <div id="statusErr" style="display:none;color:#ff8a80;font-size:13px;max-width:320px"></div>
     <div id="statusBtns" style="display:none;gap:10px">
       <button onclick="location.reload()" style="background:#1668dc;color:#fff;border:0;border-radius:10px;padding:10px 18px;font-weight:700;cursor:pointer">Tentar novamente</button>
@@ -71,16 +83,16 @@
     const $ = (id) => document.getElementById(id)
     const fail = (m) => {
       $('spin').style.display = 'none'
+      $('camBtn').style.display = 'none'
       $('statusText').textContent = 'Não foi possível abrir a RA'
       const e = $('statusErr'); e.style.display = 'block'; e.textContent = m
       const b = $('statusBtns'); b.style.display = 'flex'
     }
 
-    // Abre o IndexedDB com timeout (iOS às vezes não dispara evento algum)
+    // ---- IndexedDB (robusto p/ iOS) ----
     function openDbOnce() {
       return new Promise((resolve, reject) => {
-        let done = false
-        let req
+        let done = false, req
         try { req = indexedDB.open('canteiroxr', 1) } catch (e) { return reject(e) }
         req.onsuccess = () => { done = true; resolve(req.result) }
         req.onerror = () => { done = true; reject(req.error || new Error('open error')) }
@@ -88,7 +100,6 @@
         setTimeout(() => { if (!done) reject(new Error('timeout ao abrir o banco')) }, 3000)
       })
     }
-    // Leitura robusta: tenta várias vezes (contorna "Unable to open database file on disk" no iOS)
     async function idbGetProject(id) {
       let lastErr
       for (let i = 0; i < 6; i++) {
@@ -97,32 +108,21 @@
           if (!db.objectStoreNames.contains('projects')) { db.close(); throw new Error('Nenhum projeto salvo neste dispositivo.') }
           const result = await new Promise((resolve, reject) => {
             const g = db.transaction('projects', 'readonly').objectStore('projects').get(id)
-            g.onsuccess = () => resolve(g.result)
-            g.onerror = () => reject(g.error)
+            g.onsuccess = () => resolve(g.result); g.onerror = () => reject(g.error)
           })
-          db.close()
-          return result
-        } catch (e) {
-          lastErr = e
-          $('statusText').textContent = 'Preparando o banco de dados… (' + (i + 1) + ')'
-          await new Promise((r) => setTimeout(r, 350 + i * 250))
-        }
+          db.close(); return result
+        } catch (e) { lastErr = e; await new Promise((r) => setTimeout(r, 350 + i * 250)) }
       }
       throw lastErr || new Error('Falha ao abrir o banco de dados.')
     }
 
-    async function main() {
-      const id = new URLSearchParams(location.search).get('id')
-      if (!id) return fail('Nenhum projeto informado. Volte e abra a câmera pelo modo RA.')
-      const project = await idbGetProject(id)
-      if (!project || !project.ifc) return fail('Projeto não encontrado neste dispositivo.')
-
+    // ---- pipeline IFC -> GLB (roda em SEGUNDO PLANO, sem travar a câmera) ----
+    async function buildModelUrl(project) {
       const api = new IfcAPI()
       api.SetWasmPath('https://cdn.jsdelivr.net/npm/web-ifc@0.0.57/', true)
       await api.Init()
       const bytes = new Uint8Array(await project.ifc.arrayBuffer())
       const mid = api.OpenModel(bytes, { COORDINATE_TO_ORIGIN: true })
-
       const geoms = []
       api.StreamAllMeshes(mid, (flat) => {
         const g = flat.geometries
@@ -145,54 +145,95 @@
           bg.setAttribute('color', new THREE.BufferAttribute(col, 3))
           bg.setIndex(new THREE.BufferAttribute(ix.slice(), 1))
           bg.applyMatrix4(new THREE.Matrix4().fromArray(pg.flatTransformation))
-          geoms.push(bg)
-          geo.delete()
+          geoms.push(bg); geo.delete()
         }
       })
-      if (!geoms.length) return fail('Modelo sem geometria.')
-
+      if (!geoms.length) throw new Error('Modelo sem geometria.')
       const merged = mergeGeometries(geoms, false)
       const a = project.arAnchor
-      if (a && a.pos) merged.translate(-a.pos[0], -a.pos[1], -a.pos[2]) // âncora vai p/ a origem (sobre o marcador)
+      if (a && a.pos) merged.translate(-a.pos[0], -a.pos[1], -a.pos[2])
       const mesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, metalness: 0, roughness: 0.9 }))
-
       const exporter = new GLTFExporter()
       const glb = await new Promise((res, rej) => exporter.parse(mesh, res, rej, { binary: true }))
-      const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }))
+      return URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }))
+    }
 
-      const heading = a ? (a.heading || 0) : 0
-      let scale = parseFloat(localStorage.getItem('ar.scale') || '6.67')
-      // rx: -90 = marcador na PAREDE (folha vertical) · 0 = marcador no CHÃO
-      let rx = parseFloat(localStorage.getItem('ar.rx') || '-90')
-      let ry = parseFloat(localStorage.getItem('ar.ry') || String(Math.round(heading)))
+    // ---- estado ----
+    let modelUrl = null, sceneBuilt = false
+    let scale = parseFloat(localStorage.getItem('ar.scale') || '6.67')
+    let rx = parseFloat(localStorage.getItem('ar.rx') || '-90') // -90 = parede · 0 = chão
+    let ry = parseFloat(localStorage.getItem('ar.ry') || '0')
 
-      const applyModel = () => {
-        const m = document.getElementById('model')
-        if (!m) return
-        m.setAttribute('scale', scale + ' ' + scale + ' ' + scale)
-        m.setAttribute('rotation', rx + ' ' + ry + ' 0')
-      }
+    const applyModel = () => {
+      const m = $('model'); if (!m) return
+      m.setAttribute('scale', scale + ' ' + scale + ' ' + scale)
+      m.setAttribute('rotation', rx + ' ' + ry + ' 0')
+    }
+    const attachModelIfReady = () => {
+      if (!sceneBuilt || !modelUrl) return
+      const m = $('model'); if (m) { m.setAttribute('gltf-model', modelUrl); applyModel() }
+      $('loadHint').textContent = ''
+    }
 
+    // ---- cria a cena AR.js (câmera) — chamado DENTRO de um gesto do usuário ----
+    function buildScene() {
+      if (sceneBuilt) return
+      sceneBuilt = true
+      $('status').style.display = 'none'
+      $('controls').style.display = 'flex'
       $('app').innerHTML =
         '<a-scene embedded vr-mode-ui="enabled: false" renderer="colorManagement: true"' +
-        ' arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono; trackingMethod: best">' +
-        '  <a-marker preset="hiro">' +
-        '    <a-entity id="model" gltf-model="' + url + '"' +
-        '      position="0 0 0" rotation="' + rx + ' ' + ry + ' 0" scale="' + scale + ' ' + scale + ' ' + scale + '"></a-entity>' +
+        ' arjs="sourceType: webcam; facingMode: environment; debugUIEnabled: false; detectionMode: mono; trackingMethod: best">' +
+        '  <a-marker preset="hiro" smooth="true" smoothCount="6" smoothTolerance="0.01" smoothThreshold="3">' +
+        '    <a-entity id="model" position="0 0 0" rotation="' + rx + ' ' + ry + ' 0" scale="' + scale + ' ' + scale + ' ' + scale + '"></a-entity>' +
         '  </a-marker>' +
         '  <a-entity camera></a-entity>' +
         '</a-scene>'
+      attachModelIfReady() // se o modelo já carregou, encaixa; senão encaixa quando terminar
 
-      $('status').style.display = 'none'
-      $('controls').style.display = 'flex'
-
+      // controles de calibração
       const sl = $('scale'); sl.value = scale; $('scaleV').textContent = scale.toFixed(1) + '×'
       sl.oninput = (e) => { scale = parseFloat(e.target.value); $('scaleV').textContent = scale.toFixed(1) + '×'; localStorage.setItem('ar.scale', String(scale)); applyModel() }
-
       const ryEl = $('ry'); ryEl.value = ry; $('ryV').textContent = Math.round(ry) + '°'
       ryEl.oninput = (e) => { ry = parseFloat(e.target.value); $('ryV').textContent = Math.round(ry) + '°'; localStorage.setItem('ar.ry', String(ry)); applyModel() }
-
       $('tilt').onclick = () => { rx = (rx === 0 ? -90 : 0); localStorage.setItem('ar.rx', String(rx)); applyModel() }
+    }
+
+    // ---- pede permissão da câmera DENTRO do gesto (iOS libera só assim) ----
+    async function activateCamera() {
+      $('camErr').style.display = 'none'
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false })
+        s.getTracks().forEach((t) => t.stop()) // libera; AR.js abre a sua própria stream com a permissão já concedida
+      } catch (e) {
+        $('camErr').style.display = 'block'
+        $('camErr').textContent = 'Câmera bloqueada (' + (e && e.name ? e.name : e) + '). Permita o acesso à câmera nas configurações do navegador e toque novamente.'
+        return
+      }
+      buildScene()
+    }
+
+    async function main() {
+      const id = new URLSearchParams(location.search).get('id')
+      if (!id) return fail('Nenhum projeto informado. Volte e abra a câmera pelo modo RA.')
+
+      // 1) mostra o botão de ativar câmera JÁ (gesto do usuário abre a câmera no iOS)
+      $('spin').style.display = 'none'
+      $('statusText').textContent = 'Toque para ativar a câmera'
+      $('camBtn').style.display = 'inline-flex'
+      $('camBtn').onclick = activateCamera
+      $('loadHint').textContent = 'Carregando o modelo em segundo plano…'
+
+      // 2) carrega projeto + modelo em SEGUNDO PLANO (não bloqueia a câmera)
+      let project
+      try { project = await idbGetProject(id) } catch (e) { return fail(e && e.message ? e.message : String(e)) }
+      if (!project || !project.ifc) return fail('Projeto não encontrado neste dispositivo.')
+      const a = project.arAnchor
+      if (a && (a.heading != null) && !localStorage.getItem('ar.ry')) ry = Math.round(a.heading)
+
+      buildModelUrl(project)
+        .then((url) => { modelUrl = url; attachModelIfReady(); $('loadHint').textContent = '' })
+        .catch((e) => { console.error(e); $('loadHint').textContent = 'Falha ao carregar o modelo: ' + (e && e.message ? e.message : e) })
     }
 
     main().catch((e) => { console.error(e); fail(e && e.message ? e.message : String(e)) })

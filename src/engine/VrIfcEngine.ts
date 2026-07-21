@@ -28,6 +28,7 @@ export class VrIfcEngine extends ImmersiveEngine {
 
   // movimento tipo "andar" (setas): f=frente/trás, r=lados, u=sobe/desce
   private moveInput = { f: 0, r: 0, u: 0 }
+  private padInput = { f: 0, r: 0, u: 0 } // vindo do joystick (Gamepad API), somado às setas
   private _mf = new THREE.Vector3(); private _mr = new THREE.Vector3(); private _md = new THREE.Vector3()
   private _mup = new THREE.Vector3(0, 1, 0)
 
@@ -181,9 +182,32 @@ export class VrIfcEngine extends ImmersiveEngine {
     this.baseMat.dispose(); this.hlMat.dispose()
   }
   protected renderMono() {
-    this.applyMove()
     this.controls.update()
     this.renderer.render(this.scene, this.camera)
+  }
+  // roda em AMBOS os modos (mono e VR): lê o joystick e aplica a locomoção
+  protected onFrame() {
+    this.pollGamepad()
+    this.applyMove()
+  }
+  /** lê o primeiro controle conectado (Bluetooth/USB) via Gamepad API */
+  private pollGamepad() {
+    const pads = (typeof navigator !== "undefined" && navigator.getGamepads) ? navigator.getGamepads() : []
+    let gp: Gamepad | null = null
+    for (const p of pads) { if (p && p.connected) { gp = p; break } }
+    const on = !!gp
+    if (on !== this.gamepadConnected) { this.gamepadConnected = on; this.onGamepad?.(on) }
+    if (!gp) { this.padInput.f = this.padInput.r = this.padInput.u = 0; return }
+    const dz = (v: number) => (Math.abs(v) < 0.16 ? 0 : v) // zona morta
+    const ax = gp.axes, b = gp.buttons
+    const lx = dz(ax[0] ?? 0)   // stick esq. X → strafe
+    const ly = dz(ax[1] ?? 0)   // stick esq. Y → frente/trás
+    const rvy = dz(ax[3] ?? 0)  // stick dir. Y → subir/descer
+    const trig = (b[7]?.value ?? 0) - (b[6]?.value ?? 0) // RT sobe, LT desce
+    const dpad = (b[12]?.pressed ? 1 : 0) - (b[13]?.pressed ? 1 : 0) // d-pad ↑/↓ = frente/trás
+    this.padInput.f = Math.max(-1, Math.min(1, -ly + dpad))
+    this.padInput.r = lx
+    this.padInput.u = Math.max(-1, Math.min(1, -rvy + trig))
   }
 
   // ===================== PINOS 360 =====================
@@ -343,17 +367,21 @@ export class VrIfcEngine extends ImmersiveEngine {
   setUp(v: number) { this.moveInput.u = v }
   stopMove() { this.moveInput.f = this.moveInput.r = this.moveInput.u = 0 }
   private applyMove() {
-    const m = this.moveInput
-    if (!m.f && !m.r && !m.u) return
+    // combina setas (moveInput) + joystick (padInput)
+    const f = Math.max(-1, Math.min(1, this.moveInput.f + this.padInput.f))
+    const r = Math.max(-1, Math.min(1, this.moveInput.r + this.padInput.r))
+    const u = Math.max(-1, Math.min(1, this.moveInput.u + this.padInput.u))
+    if (!f && !r && !u) return
     const speed = this.maxDim * 0.004
-    this._mf.subVectors(this.controls.target, this.camera.position).normalize()
-    this._mr.crossVectors(this._mf, this.camera.up).normalize()
+    // direção = para onde a CÂMERA aponta (no VR isso é o giroscópio; no mono, o orbit)
+    this._mf.set(0, 0, -1).applyQuaternion(this.camera.quaternion)
+    this._mr.set(1, 0, 0).applyQuaternion(this.camera.quaternion)
     this._md.set(0, 0, 0)
-    this._md.addScaledVector(this._mf, m.f * speed)
-    this._md.addScaledVector(this._mr, m.r * speed)
-    this._md.addScaledVector(this._mup, m.u * speed)
+    this._md.addScaledVector(this._mf, f * speed)
+    this._md.addScaledVector(this._mr, r * speed)
+    this._md.addScaledVector(this._mup, u * speed)
     this.camera.position.add(this._md)
-    this.controls.target.add(this._md)
+    this.controls.target.add(this._md) // mantém o alvo do orbit em sincronia (modo mono)
   }
 
   getCenter(): [number, number, number] { return [this.center.x, this.center.y, this.center.z] }

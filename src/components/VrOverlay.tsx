@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Settings2, X } from "lucide-react"
+import { Settings2, X, Gamepad2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { SettingsSliders } from "@/components/SettingsSliders"
 import type { ImmersiveEngine } from "@/engine/ImmersiveEngine"
@@ -11,6 +11,8 @@ import type { ImmersiveEngine } from "@/engine/ImmersiveEngine"
 export function VrOverlay({ engine, show, onExit }: { engine: ImmersiveEngine | null; show: boolean; onExit: () => void }) {
   const [open, setOpen] = useState(false)
   const [hint, setHint] = useState(true)
+  const [pad, setPad] = useState(false)
+  const [padHint, setPadHint] = useState(false)
 
   useEffect(() => {
     if (!show) { setOpen(false); setHint(true); return }
@@ -18,6 +20,14 @@ export function VrOverlay({ engine, show, onExit }: { engine: ImmersiveEngine | 
     const t = setTimeout(() => setHint(false), 3500)
     return () => clearTimeout(t)
   }, [show])
+
+  // aviso "joystick conectado" durante o VR
+  useEffect(() => {
+    if (!show || !engine) return
+    setPad(engine.isGamepadConnected())
+    engine.onGamepad = (c) => { setPad(c); if (c) { setPadHint(true); setTimeout(() => setPadHint(false), 3000) } }
+    return () => { if (engine) engine.onGamepad = undefined }
+  }, [show, engine])
 
   if (!show) return null
   return (
@@ -35,6 +45,18 @@ export function VrOverlay({ engine, show, onExit }: { engine: ImmersiveEngine | 
           style={{ opacity: hint ? 1 : 0 }}
         >
           Toque para sair · engrenagem p/ ajustar
+        </div>
+      )}
+
+      {/* status do joystick: badge fixo quando conectado + toast ao conectar */}
+      {pad && (
+        <div className="pointer-events-none fixed right-3 top-3 z-40 flex items-center gap-1.5 rounded-full bg-emerald-600/85 px-3 py-1.5 text-xs font-bold text-white shadow-lg">
+          <Gamepad2 className="h-4 w-4" /> Controle
+        </div>
+      )}
+      {padHint && (
+        <div className="pointer-events-none fixed left-1/2 top-14 z-40 -translate-x-1/2 rounded-full bg-emerald-600/90 px-4 py-2 text-center text-xs font-semibold text-white shadow-lg">
+          🎮 Controle conectado · use os sticks p/ andar
         </div>
       )}
 

@@ -25,6 +25,10 @@ export abstract class ImmersiveEngine {
 
   /** callback p/ o React saber quando entra/sai do VR */
   onVrChange?: (vr: boolean) => void
+  /** callback p/ a UI saber quando um controle (joystick) conecta/desconecta */
+  onGamepad?: (connected: boolean) => void
+  protected gamepadConnected = false
+  isGamepadConnected(): boolean { return this.gamepadConnected }
 
   constructor(canvas: HTMLCanvasElement) {
     const vp = ImmersiveEngine.vp()
@@ -149,6 +153,7 @@ export abstract class ImmersiveEngine {
 
   private loop() {
     this.raf = requestAnimationFrame(this.loop)
+    this.onFrame() // por frame, nos DOIS modos (ex.: joystick / locomoção)
     if (this.vrMode) {
       if (this.gyroActive) this.camera.quaternion.copy(this.gyroQuat)
       this.camera.updateMatrixWorld(true)
@@ -181,6 +186,8 @@ export abstract class ImmersiveEngine {
 
   // ---- hooks das subclasses ----
   protected abstract renderMono(): void
+  /** roda todo frame nos dois modos (mono e VR). Usado p/ joystick + locomoção. */
+  protected onFrame() { /* opcional */ }
   protected onEnterVR() { /* opcional */ }
   protected onExitVR() { /* opcional */ }
   protected onDispose() { /* opcional */ }
