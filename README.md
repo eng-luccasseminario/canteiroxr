@@ -30,9 +30,13 @@ com um **marcador A4 (RA)** — tudo direto do navegador do celular, sem loja de
 
 ## ✅ Pré-requisitos
 
-- **[Node.js](https://nodejs.org/) 18+** (recomendado 20/22) e **npm 9+**
+- **[Git](https://git-scm.com/downloads)** (para clonar o repositório)
+- **[Node.js](https://nodejs.org/) 18+** (recomendado 20/22 LTS) e **npm 9+**
 - Um navegador moderno. Para **RV/RA no celular** é preciso **HTTPS** (giroscópio e câmera só
   funcionam em contexto seguro) — use o deploy na Vercel ou um túnel (ex.: `cloudflared`).
+
+> 💡 **Não tem Git/Node.js instalado?** Use o fluxo do **agente de IA** (seção abaixo): com o prompt
+> pronto, o próprio agente instala o Git e o Node.js para você antes de clonar.
 
 ---
 
@@ -51,16 +55,23 @@ Se você usa uma IDE com agente (ex.: **Google Antigravity**), **não precisa** 
 Abra a pasta onde quer o projeto e **cole este prompt** no agente:
 
 ```text
-Clone o repositório https://github.com/eng-luccasseminario/canteiroxr.git para esta pasta,
-entre no projeto e instale TODAS as dependências (npm install).
-Em seguida, rode o app em modo desenvolvimento na PORTA 3000.
-Se a porta 3000 já estiver ocupada por outro processo, ENCERRE esse processo
-e suba este projeto novo no lugar, também na porta 3000.
-Ao terminar, me diga a URL local (http://localhost:3000) para eu abrir no navegador.
+Quero rodar este projeto do zero nesta máquina, mesmo que ela não tenha nada instalado.
+Faça tudo, verificando antes o que já existe:
+1) Verifique se o Git está instalado; se não, instale o Git.
+2) Verifique se o Node.js (versão LTS) e o npm estão instalados; se não, instale o Node.js LTS.
+3) Clone https://github.com/eng-luccasseminario/canteiroxr.git para esta pasta e entre no projeto.
+4) Instale TODAS as dependências (npm install).
+5) Rode o app em modo desenvolvimento na PORTA 3000; se a 3000 estiver ocupada,
+   encerre o processo dela e suba este no lugar.
+6) Ao terminar, me diga a URL local (http://localhost:3000). Se aparecer erro, corrija e tente de novo.
 ```
 
-O agente vai clonar, instalar as bibliotecas e deixar o app rodando em **http://localhost:3000**.
+Com esse prompt o agente **instala o Git e o Node.js se estiverem faltando**, clona, instala as
+bibliotecas e deixa o app rodando em **http://localhost:3000** — você não precisa instalar nada à mão.
 Depois, é só pedir mudanças por prompt (cores, textos, novas funções etc.).
+
+> Se a instalação automática falhar (permissão de administrador), instale você mesmo — grátis:
+> [Node.js LTS](https://nodejs.org/) e [Git](https://git-scm.com/downloads). Depois cole o prompt de novo.
 
 > 📘 Guia visual completo (criar conta no Antigravity, conectar, onde colar o prompt, gerar renders
 > hiper-realistas com IA e converter em 360°): veja a apostila **“Como Clonar o App e Personalizar”**.
