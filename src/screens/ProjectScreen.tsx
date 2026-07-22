@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Upload, Glasses, RefreshCw, Loader2, Building2, MapPin, Save, List, ChevronRight, Trash2, Image as ImageIcon, FolderOpen, Sparkles, EyeOff, Eye, Focus, X, Scan, Printer, Camera, Pencil, Layers, ListTree, Check, Table } from "lucide-react"
+import { Upload, Glasses, RefreshCw, Loader2, Building2, MapPin, Save, List, ChevronRight, Trash2, Image as ImageIcon, FolderOpen, EyeOff, Eye, Focus, X, Scan, Printer, Camera, Pencil, Layers, ListTree, Check, Table } from "lucide-react"
 import { VrIfcEngine, type ElementInfo, type TreeModel } from "@/engine/VrIfcEngine"
 import { Button } from "@/components/ui/button"
 import { TopBar } from "@/components/TopBar"
@@ -142,28 +142,6 @@ export default function ProjectScreen({ back }: { back: () => void }) {
       refreshTree(); await persist(pinsRef.current); showToast(`${files.length} modelo(s) adicionado(s) ✓`)
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
     finally { setProgress(null) }
-  }
-
-  async function loadExample() {
-    const eng = engineRef.current; if (!eng) return
-    try {
-      const base = import.meta.env.BASE_URL
-      projectId.current = newId(); setProjectName("Casa Residencial"); setPins([])
-      setSelectedGid(null); setAnnotations({}); annRef.current = {}; applyAnchor(null)
-      const ifc = await (await fetch(`${base}samples/casa_residencial.ifc`)).blob()
-      await loadModelsList([{ name: "Casa Residencial", blob: ifc }])
-      const [panoSuite, panoSala] = await Promise.all([
-        fetch(`${base}samples/quarto-suite-360.jpg`).then((r) => r.blob()),
-        fetch(`${base}samples/sala-360.jpg`).then((r) => r.blob()),
-      ])
-      const view = eng.getView(); const thumb = eng.captureThumbnail()
-      const c = eng.getCenter(); const d = eng.getMaxDim()
-      const p1: Pin = { id: newId(), name: "Suíte (exemplo)", pos: c, view, thumb, pano: panoSuite }
-      const p2: Pin = { id: newId(), name: "Sala (exemplo)", pos: [c[0] + d * 0.25, c[1], c[2] + d * 0.15], view, thumb, pano: panoSala }
-      eng.addPinSprite(p1.id, p1.pos); eng.addPinSprite(p2.id, p2.pos)
-      const list = [p1, p2]; setPins(list); await persist(list)
-      showToast("Exemplo carregado — 2 ambientes 📍")
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
 
   async function openSaved(id: string) {
@@ -344,7 +322,6 @@ export default function ProjectScreen({ back }: { back: () => void }) {
             Carregue um ou mais <b className="text-foreground">.ifc</b> (compatibilização), fixe <b className="text-foreground">pinos 360°</b> e veja tudo em <b className="text-foreground">RV</b>.
           </p>
           <Button size="lg" className="mt-6" onClick={() => ifcInput.current?.click()}><Upload className="h-5 w-5" /> Carregar IFC</Button>
-          <Button variant="outline" className="mt-3" onClick={loadExample}><Sparkles className="h-4 w-4" /> Carregar exemplo (casa + 2 ambientes 360°)</Button>
           {error && <p className="mt-4 max-w-xs text-xs text-red-400">Erro: {error}</p>}
 
           {saved.length > 0 && (
