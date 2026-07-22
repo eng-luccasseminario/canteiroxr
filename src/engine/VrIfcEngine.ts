@@ -29,14 +29,20 @@ export interface TreeType { type: string; label: string; count: number; visible:
 export interface TreeModel { index: number; name: string; count: number; visible: boolean; opacity: number; types: TreeType[] }
 export interface ElementInfo {
   gid: string; modelName: string; type: string; typeLabel: string
-  name: string; globalId: string; attrs: [string, string][]
-  psets: { name: string; props: [string, string][] }[]
+  name: string; globalId: string
+  asset: [string, string][]   // ficha do ativo (PT-BR) — atributos principais, ordenados
+  attrs: [string, string][]
+  psets: { name: string; props: [string, string][] }[]   // psets técnicos (sem a ficha)
 }
 export interface AssetRow {
   gid: string; modelName: string; categoria: string; nome: string
   codigo: string; fabricante: string; valor: string; validade: string
-  om: string; globalId: string
+  vida: string; operacao: string; om: string; status: string; globalId: string
 }
+
+const ASSET_PSET = "Dados do Ativo"
+const ASSET_ORDER = ["Categoria", "Código do ativo", "Fabricante", "Valor (R$)", "Validade / Garantia", "Vida útil estimada", "Operação", "Plano de manutenção", "Status"]
+const normKey = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim()
 
 // Modo VR: carrega 1+ IFC (modelo federado), 1 mesh por elemento (mantém identidade
 // p/ selecionar/ocultar/isolar/pintar/consultar), e permite "entrar" no modelo em VR Box.
@@ -551,7 +557,16 @@ export class VrIfcEngine extends ImmersiveEngine {
       }
     } catch { /* ignora */ }
 
-    return { gid, modelName: this.modelNames[mi] ?? `Modelo ${mi + 1}`, type, typeLabel: labelForType(type), name, globalId, attrs, psets }
+    // separa a FICHA DO ATIVO (PT-BR) dos psets técnicos
+    const apIdx = psets.findIndex((p) => p.name.startsWith(ASSET_PSET))
+    let asset: [string, string][] = []
+    if (apIdx >= 0) {
+      const ap = psets.splice(apIdx, 1)[0]
+      const map = new Map(ap.props.map(([k, v]) => [normKey(k), v]))
+      asset = ASSET_ORDER.map((k) => [k, map.get(normKey(k)) ?? ""] as [string, string]).filter(([, v]) => v)
+    }
+
+    return { gid, modelName: this.modelNames[mi] ?? `Modelo ${mi + 1}`, type, typeLabel: labelForType(type), name, globalId, asset, attrs, psets }
   }
 
   /** varre TODOS os elementos e extrai os campos de ativo (p/ exportar CSV) */
@@ -560,10 +575,8 @@ export class VrIfcEngine extends ImmersiveEngine {
     for (const gid of this.meshes.keys()) {
       const info = await this.getElementInfo(gid)
       if (!info) continue
-      const pset = info.psets.find((p) => p.name.startsWith("Dados do Ativo"))
-      // casamento robusto (ignora acento/caixa) — evita quebra por diferença de encoding do IFC
-      const norm = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim()
-      const get = (k: string) => { const nk = norm(k); return pset?.props.find(([n]) => norm(n) === nk)?.[1] ?? "" }
+      const map = new Map(info.asset.map(([k, v]) => [normKey(k), v]))
+      const get = (k: string) => map.get(normKey(k)) ?? ""
       rows.push({
         gid, modelName: info.modelName,
         categoria: get("Categoria") || info.typeLabel,
@@ -572,7 +585,10 @@ export class VrIfcEngine extends ImmersiveEngine {
         fabricante: get("Fabricante"),
         valor: get("Valor (R$)"),
         validade: get("Validade / Garantia"),
+        vida: get("Vida útil estimada"),
+        operacao: get("Operação"),
         om: get("Plano de manutenção"),
+        status: get("Status"),
         globalId: info.globalId,
       })
     }

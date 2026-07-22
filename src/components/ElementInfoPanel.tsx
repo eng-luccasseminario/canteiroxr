@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { motion } from "framer-motion"
-import { X, Info, Palette, StickyNote, EyeOff, Focus, Loader2 } from "lucide-react"
+import { X, Info, Palette, StickyNote, EyeOff, Focus, Loader2, ClipboardList, ChevronDown, ChevronRight } from "lucide-react"
 import type { ElementInfo } from "@/engine/VrIfcEngine"
 import type { Annotation } from "@/lib/projectDb"
 import { Button } from "@/components/ui/button"
@@ -23,7 +23,9 @@ type Props = {
 // + anotação (nota de texto e cor de pintura). Não cobre o centro do modelo.
 export function ElementInfoPanel({ info, loading, annotation, onColor, onNote, onHide, onIsolate, onClose }: Props) {
   const [note, setNote] = useState(annotation.note ?? "")
+  const [showTech, setShowTech] = useState(false)
   useEffect(() => { setNote(annotation.note ?? "") }, [info?.gid])
+  useEffect(() => { setShowTech(false) }, [info?.gid])
 
   const commitNote = () => { if ((note.trim() || "") !== (annotation.note ?? "")) onNote(note.trim()) }
 
@@ -81,29 +83,47 @@ export function ElementInfoPanel({ info, loading, annotation, onColor, onNote, o
           />
         </div>
 
-        {/* atributos */}
+        {/* FICHA DO ATIVO — atributos principais, estruturados */}
         <div>
-          <div className="mb-1 text-[11px] font-semibold text-muted-foreground">Atributos</div>
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><ClipboardList className="h-3.5 w-3.5" /> Ficha do ativo</div>
           {loading && !info ? (
-            <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> lendo propriedades…</div>
-          ) : (
-            <div className="flex flex-col gap-2 text-xs">
-              {info?.globalId && <Row k="GlobalId" v={info.globalId} mono />}
-              {info?.attrs.map(([k, v]) => <Row key={k} k={k} v={v} />)}
-              {info?.psets.map((ps) => (
-                <div key={ps.name} className="rounded-lg border border-border bg-secondary/30 p-2">
-                  <div className="mb-1 truncate text-[11px] font-semibold text-primary">{ps.name}</div>
-                  <div className="flex flex-col gap-0.5">
-                    {ps.props.map(([k, v]) => <Row key={k} k={k} v={v} />)}
-                  </div>
+            <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> lendo informações…</div>
+          ) : info && info.asset.length ? (
+            <div className="overflow-hidden rounded-xl border border-border">
+              {info.asset.map(([k, v], i) => (
+                <div key={k} className={`flex items-start justify-between gap-3 px-3 py-2 text-xs ${i % 2 ? "bg-secondary/20" : "bg-secondary/40"}`}>
+                  <span className="shrink-0 font-medium text-muted-foreground">{k}</span>
+                  <span className="min-w-0 flex-1 break-words text-right font-semibold">{v}</span>
                 </div>
               ))}
-              {info && !info.attrs.length && !info.psets.length && !info.globalId && (
-                <div className="text-[11px] text-muted-foreground">Sem atributos adicionais neste elemento.</div>
-              )}
             </div>
+          ) : (
+            <div className="text-[11px] text-muted-foreground">Este elemento não tem ficha de ativo cadastrada.</div>
           )}
         </div>
+
+        {/* Dados técnicos (IFC) — recolhido por padrão */}
+        {info && (info.psets.length > 0 || info.attrs.length > 0 || info.globalId) && (
+          <div>
+            <button onClick={() => setShowTech((s) => !s)} className="flex w-full items-center gap-1.5 text-[11px] font-semibold text-muted-foreground hover:text-foreground">
+              {showTech ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} Dados técnicos (IFC)
+            </button>
+            {showTech && (
+              <div className="mt-2 flex flex-col gap-2 text-xs">
+                {info.globalId && <Row k="GlobalId" v={info.globalId} mono />}
+                {info.attrs.map(([k, v]) => <Row key={k} k={k} v={v} />)}
+                {info.psets.map((ps) => (
+                  <div key={ps.name} className="rounded-lg border border-border bg-secondary/30 p-2">
+                    <div className="mb-1 truncate text-[11px] font-semibold text-primary">{ps.name}</div>
+                    <div className="flex flex-col gap-0.5">
+                      {ps.props.map(([k, v]) => <Row key={k} k={k} v={v} />)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </motion.div>
   )

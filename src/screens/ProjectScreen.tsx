@@ -244,12 +244,12 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     const eng = engineRef.current; if (!eng || !loaded) return
     showToast("Gerando CSV dos ativos…")
     const rows = await eng.getAllAssets()
-    const header = ["Modelo", "Categoria", "Nome", "Código", "Fabricante", "Valor (R$)", "Validade / Garantia", "Plano de O&M", "Observação", "GlobalId"]
+    const header = ["Modelo", "Categoria", "Nome", "Código", "Fabricante", "Valor (R$)", "Validade / Garantia", "Vida útil", "Operação", "Plano de O&M", "Status", "Observação", "GlobalId"]
     const esc = (s: unknown) => `"${String(s ?? "").replace(/"/g, '""')}"`
     const lines = [header.map(esc).join(";")]
     for (const r of rows) {
       const note = annRef.current[r.gid]?.note ?? ""
-      lines.push([r.modelName, r.categoria, r.nome, r.codigo, r.fabricante, r.valor, r.validade, r.om, note, r.globalId].map(esc).join(";"))
+      lines.push([r.modelName, r.categoria, r.nome, r.codigo, r.fabricante, r.valor, r.validade, r.vida, r.operacao, r.om, r.status, note, r.globalId].map(esc).join(";"))
     }
     const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" })
     const url = URL.createObjectURL(blob)
