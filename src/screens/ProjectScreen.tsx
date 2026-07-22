@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Upload, Glasses, RefreshCw, Loader2, Building2, MapPin, Save, List, ChevronRight, Trash2, Image as ImageIcon, FolderOpen, Sparkles, EyeOff, Eye, Focus, X, Scan, Printer, Camera, Pencil, Layers, ListTree, Check } from "lucide-react"
+import { Upload, Glasses, RefreshCw, Loader2, Building2, MapPin, Save, List, ChevronRight, Trash2, Image as ImageIcon, FolderOpen, Sparkles, EyeOff, Eye, Focus, X, Scan, Printer, Camera, Pencil, Layers, ListTree, Check, Table } from "lucide-react"
 import { VrIfcEngine, type ElementInfo, type TreeModel } from "@/engine/VrIfcEngine"
 import { Button } from "@/components/ui/button"
 import { TopBar } from "@/components/TopBar"
@@ -148,10 +148,10 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     const eng = engineRef.current; if (!eng) return
     try {
       const base = import.meta.env.BASE_URL
-      projectId.current = newId(); setProjectName("Exemplo — Casa FZK"); setPins([])
+      projectId.current = newId(); setProjectName("Casa Residencial"); setPins([])
       setSelectedGid(null); setAnnotations({}); annRef.current = {}; applyAnchor(null)
-      const ifc = await (await fetch(`${base}samples/casa-fzk-haus.ifc`)).blob()
-      await loadModelsList([{ name: "Casa FZK", blob: ifc }])
+      const ifc = await (await fetch(`${base}samples/casa_residencial.ifc`)).blob()
+      await loadModelsList([{ name: "Casa Residencial", blob: ifc }])
       const [panoSuite, panoSala] = await Promise.all([
         fetch(`${base}samples/quarto-suite-360.jpg`).then((r) => r.blob()),
         fetch(`${base}samples/sala-360.jpg`).then((r) => r.blob()),
@@ -238,6 +238,26 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     updateAnnotation(selectedGid, { ...(annRef.current[selectedGid] ?? {}), note: note || undefined })
   }
   const closeInfo = () => { engineRef.current?.clearSelection() }
+
+  // ---- exportar CSV com todos os ativos estruturados do modelo ----
+  const exportCsv = async () => {
+    const eng = engineRef.current; if (!eng || !loaded) return
+    showToast("Gerando CSV dos ativos…")
+    const rows = await eng.getAllAssets()
+    const header = ["Modelo", "Categoria", "Nome", "Código", "Fabricante", "Valor (R$)", "Validade / Garantia", "Plano de O&M", "Observação", "GlobalId"]
+    const esc = (s: unknown) => `"${String(s ?? "").replace(/"/g, '""')}"`
+    const lines = [header.map(esc).join(";")]
+    for (const r of rows) {
+      const note = annRef.current[r.gid]?.note ?? ""
+      lines.push([r.modelName, r.categoria, r.nome, r.codigo, r.fabricante, r.valor, r.validade, r.om, note, r.globalId].map(esc).join(";"))
+    }
+    const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url; a.download = `${(projectName || "ativos").replace(/[^\w\-.]+/g, "_")}.csv`; a.click()
+    URL.revokeObjectURL(url)
+    showToast(`CSV exportado · ${rows.length} ativos ✓`)
+  }
 
   const enterModelVR = (pin?: Pin) => {
     const eng = engineRef.current; if (!eng) return
@@ -409,6 +429,7 @@ export default function ProjectScreen({ back }: { back: () => void }) {
             <Button variant="secondary" size="icon" onClick={() => ifcInput.current?.click()} aria-label="Novo IFC (troca o projeto)"><RefreshCw className="h-4 w-4" /></Button>
             <Button variant="secondary" size="sm" onClick={() => addIfcInput.current?.click()}><Layers className="h-4 w-4" /> + Modelo</Button>
             <Button variant="secondary" size="sm" onClick={() => { refreshTree(); setTreeOpen(true) }}><ListTree className="h-4 w-4" /> Árvore</Button>
+            <Button variant="secondary" size="sm" onClick={exportCsv}><Table className="h-4 w-4" /> CSV</Button>
             <Button variant={placing ? "default" : "secondary"} size="sm" onClick={togglePlacing}><MapPin className="h-4 w-4" /> {placing ? "Cancelar" : "Pino 360"}</Button>
             <Button variant="secondary" size="icon" onClick={() => setPinsMenu(true)} aria-label="Lista de pinos" disabled={!pins.length}><List className="h-4 w-4" /></Button>
             <Button variant="secondary" size="sm" onClick={startAr}><Scan className="h-4 w-4" /> RA</Button>

@@ -13,14 +13,18 @@ com um **marcador A4 (RA)** — tudo direto do navegador do celular, sem loja de
 ## ✨ Funcionalidades
 
 - **Projeto BIM + 360°** — carrega `.ifc` (via [web-ifc](https://github.com/ThatOpen/engine_web-ifc)), 1 mesh por elemento:
-  - Navegação em 1ª pessoa (setas) + órbita (arraste)
-  - **Selecionar / Ocultar / Isolar** elementos
-  - **Pinos 360°**: anexa fotos equiretangulares em pontos do modelo (tour)
+  - Navegação em 1ª pessoa — **WASD** (PC) / setas na tela (celular) + órbita (arraste); **←/→** giram a vista
+  - **Selecionar / Ocultar / Isolar** elementos e ver os **atributos** do elemento clicado
+  - **Modelo federado**: sobe **vários IFC** (compatibilização) no mesmo projeto
+  - **Árvore do modelo** por disciplina/categoria + **raio-X** (opacidade por grupo)
+  - **Anotações**: pinta o elemento de uma cor e adiciona uma **observação** (marcador “!” clicável)
+  - **Exportar CSV** de todos os ativos (nome, categoria, fabricante, código, valor, validade, O&M, observação)
+  - **Pinos 360°**: anexa fotos equiretangulares em pontos do modelo (tour com transição suave entre cenas)
   - **Modo RV** (VR Box) a partir de qualquer ponto de observação
   - **Modo RA**: fixa uma folha **A4 vertical em escala real (1:1)** numa parede e ancora o projeto no marcador
 - **Ambientes 360°** — tour de fotos 360° equiretangulares com hotspots e **VR Box**
 - **VR Box estereoscópico** — tela dividida + giroscópio (não usa WebXR; funciona no Safari do iPhone)
-- **Persistência local** — projetos (IFC + pinos + âncora) salvos em IndexedDB, sem servidor
+- **Persistência local** — projetos (IFC + pinos + âncora + anotações) salvos em IndexedDB, sem servidor
 
 ---
 
@@ -38,6 +42,28 @@ com um **marcador A4 (RA)** — tudo direto do navegador do celular, sem loja de
 git clone https://github.com/eng-luccasseminario/canteiroxr.git
 cd canteiroxr
 ```
+
+---
+
+## 🤖 Clonar com um agente de IA (Google Antigravity) — sem digitar comandos
+
+Se você usa uma IDE com agente (ex.: **Google Antigravity**), **não precisa** rodar os comandos à mão.
+Abra a pasta onde quer o projeto e **cole este prompt** no agente:
+
+```text
+Clone o repositório https://github.com/eng-luccasseminario/canteiroxr.git para esta pasta,
+entre no projeto e instale TODAS as dependências (npm install).
+Em seguida, rode o app em modo desenvolvimento na PORTA 3000.
+Se a porta 3000 já estiver ocupada por outro processo, ENCERRE esse processo
+e suba este projeto novo no lugar, também na porta 3000.
+Ao terminar, me diga a URL local (http://localhost:3000) para eu abrir no navegador.
+```
+
+O agente vai clonar, instalar as bibliotecas e deixar o app rodando em **http://localhost:3000**.
+Depois, é só pedir mudanças por prompt (cores, textos, novas funções etc.).
+
+> 📘 Guia visual completo (criar conta no Antigravity, conectar, onde colar o prompt, gerar renders
+> hiper-realistas com IA e converter em 360°): veja a apostila **“Como Clonar o App e Personalizar”**.
 
 ---
 
@@ -60,9 +86,9 @@ cd canteiroxr
    ```bash
    npm run dev
    ```
-   **Resultado esperado:** `Local: http://localhost:5173/`.
+   **Resultado esperado:** `Local: http://localhost:3000/` (porta fixada em 3000).
 
-2. Abra `http://localhost:5173` e escolha um modo:
+2. Abra `http://localhost:3000` e escolha um modo:
 
 | Ação | Onde | O que faz |
 |---|---|---|
@@ -83,7 +109,7 @@ cd canteiroxr
 
 | Comando | Descrição |
 |---|---|
-| `npm run dev` | Servidor de desenvolvimento (HMR) em `http://localhost:5173` |
+| `npm run dev` | Servidor de desenvolvimento (HMR) em `http://localhost:3000` (porta 3000) |
 | `npm run build` | Type-check (`tsc -b`) + build de produção em `dist/` |
 | `npm run preview` | Serve o build de `dist/` localmente |
 | `npm run lint` | Análise estática com Oxlint |
@@ -145,7 +171,7 @@ canteiroxr/
 
 ## 📦 Ativos de demonstração (`public/samples/`)
 
-- `casa-fzk-haus.ifc` — modelo **AC20-FZK-Haus** (Karlsruhe Institute of Technology, arquivo de exemplo público)
+- `casa_residencial.ifc` — casa residencial de demonstração (base **AC20-FZK-Haus** / KIT, arquivo público) **tratada em PT-BR**: cada ativo tem nome em português e um property set **“Dados do Ativo (PT-BR)”** com fabricante, código, valor, validade/garantia e plano de O&M (**dados de exemplo didáticos**). É a base do botão **Exportar CSV**.
 - `sala-360.jpg` — derivado do HDRI **"Combination Room"** de [Poly Haven](https://polyhaven.com) (CC0)
 - `quarto-suite-360.jpg` — imagem de exemplo do projeto [Panolens](https://github.com/pchen66/panolens.js)
 - `hiro-marker.png` — marcador Hiro do [AR.js](https://github.com/AR-js-org/AR.js)

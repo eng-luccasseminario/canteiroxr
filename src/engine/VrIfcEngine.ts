@@ -32,6 +32,11 @@ export interface ElementInfo {
   name: string; globalId: string; attrs: [string, string][]
   psets: { name: string; props: [string, string][] }[]
 }
+export interface AssetRow {
+  gid: string; modelName: string; categoria: string; nome: string
+  codigo: string; fabricante: string; valor: string; validade: string
+  om: string; globalId: string
+}
 
 // Modo VR: carrega 1+ IFC (modelo federado), 1 mesh por elemento (mantém identidade
 // p/ selecionar/ocultar/isolar/pintar/consultar), e permite "entrar" no modelo em VR Box.
@@ -369,6 +374,9 @@ export class VrIfcEngine extends ImmersiveEngine {
     }
     const pinHit = this.ray.intersectObjects(this.pinGroup.children)[0]
     if (pinHit) { this.onPinClick?.(pinHit.object.userData.id as string); return }
+    // marcador "!" (observação): clicar seleciona o elemento e abre o painel c/ a nota
+    const mkHit = this.ray.intersectObjects(this.markerGroup.children)[0]
+    if (mkHit) { const gid = (mkHit.object.userData as { gid?: string }).gid; if (gid) { this.clearSelection(); this.selectElement(gid) } return }
     if (this.modelGroup) {
       const hits = this.ray.intersectObjects(this.modelGroup.children, false)
       const m = hits.find((h) => h.object.visible !== false)
@@ -546,6 +554,31 @@ export class VrIfcEngine extends ImmersiveEngine {
     return { gid, modelName: this.modelNames[mi] ?? `Modelo ${mi + 1}`, type, typeLabel: labelForType(type), name, globalId, attrs, psets }
   }
 
+  /** varre TODOS os elementos e extrai os campos de ativo (p/ exportar CSV) */
+  async getAllAssets(): Promise<AssetRow[]> {
+    const rows: AssetRow[] = []
+    for (const gid of this.meshes.keys()) {
+      const info = await this.getElementInfo(gid)
+      if (!info) continue
+      const pset = info.psets.find((p) => p.name.startsWith("Dados do Ativo"))
+      // casamento robusto (ignora acento/caixa) — evita quebra por diferença de encoding do IFC
+      const norm = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim()
+      const get = (k: string) => { const nk = norm(k); return pset?.props.find(([n]) => norm(n) === nk)?.[1] ?? "" }
+      rows.push({
+        gid, modelName: info.modelName,
+        categoria: get("Categoria") || info.typeLabel,
+        nome: info.name || info.typeLabel,
+        codigo: get("Código do ativo"),
+        fabricante: get("Fabricante"),
+        valor: get("Valor (R$)"),
+        validade: get("Validade / Garantia"),
+        om: get("Plano de manutenção"),
+        globalId: info.globalId,
+      })
+    }
+    return rows
+  }
+
   // ===================== ANOTAÇÕES (nota + cor + marcador "!") =====================
   /** aplica cor (ou null) + marcador. hasNote controla o "!" mesmo sem cor. */
   annotate(gid: string, color: string | null, hasNote: boolean) {
@@ -563,6 +596,7 @@ export class VrIfcEngine extends ImmersiveEngine {
       sp.scale.set(s, s, 1)
       sp.position.copy(c)
       sp.renderOrder = 24
+      sp.userData = { gid } // permite clicar no "!" p/ selecionar o elemento
       this.markerGroup.add(sp); this.markers.set(gid, sp)
     } else if (cur) {
       this.markerGroup.remove(cur); cur.material.dispose(); this.markers.delete(gid)
