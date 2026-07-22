@@ -29,6 +29,8 @@ export abstract class ImmersiveEngine {
   onGamepad?: (connected: boolean) => void
   protected gamepadConnected = false
   isGamepadConnected(): boolean { return this.gamepadConnected }
+  /** callback de DIAGNÓSTICO: mostra o que o controle/teclado está mandando (p/ depurar VR Box) */
+  onInputDebug?: (text: string) => void
 
   constructor(canvas: HTMLCanvasElement) {
     const vp = ImmersiveEngine.vp()

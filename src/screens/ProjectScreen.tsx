@@ -1,23 +1,27 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react"
-import { motion } from "framer-motion"
-import { Upload, Glasses, RefreshCw, Loader2, Building2, MapPin, Save, List, ChevronRight, Trash2, Image as ImageIcon, FolderOpen, Sparkles, EyeOff, Eye, Focus, X, Scan, Printer, Camera, Pencil } from "lucide-react"
-import { VrIfcEngine } from "@/engine/VrIfcEngine"
+import { motion, AnimatePresence } from "framer-motion"
+import { Upload, Glasses, RefreshCw, Loader2, Building2, MapPin, Save, List, ChevronRight, Trash2, Image as ImageIcon, FolderOpen, Sparkles, EyeOff, Eye, Focus, X, Scan, Printer, Camera, Pencil, Layers, ListTree, Check } from "lucide-react"
+import { VrIfcEngine, type ElementInfo, type TreeModel } from "@/engine/VrIfcEngine"
 import { Button } from "@/components/ui/button"
 import { TopBar } from "@/components/TopBar"
 import { VrOverlay } from "@/components/VrOverlay"
 import { MoveControls } from "@/components/MoveControls"
 import { Pano360Overlay } from "@/components/Pano360Overlay"
+import { ElementInfoPanel } from "@/components/ElementInfoPanel"
+import { ModelTree } from "@/components/ModelTree"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
-import { newId, saveProject, getProject, listProjects, deleteProject, type Pin, type ProjectMeta, type ArAnchor } from "@/lib/projectDb"
+import { newId, saveProject, getProject, listProjects, deleteProject, renameProject, projectModels, type Pin, type ProjectMeta, type ArAnchor, type ModelRef, type Annotation } from "@/lib/projectDb"
 
 export default function ProjectScreen({ back }: { back: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const engineRef = useRef<VrIfcEngine | null>(null)
   const ifcInput = useRef<HTMLInputElement>(null)
+  const addIfcInput = useRef<HTMLInputElement>(null)
   const panoInput = useRef<HTMLInputElement>(null)
-  const ifcBlob = useRef<Blob | null>(null)
+  const modelsRef = useRef<ModelRef[]>([])
   const projectId = useRef<string>("")
   const pinsRef = useRef<Pin[]>([])
+  const annRef = useRef<Record<string, Annotation>>({})
 
   const [ready, setReady] = useState(false)
   const [loaded, setLoaded] = useState(false)
@@ -45,9 +49,23 @@ export default function ProjectScreen({ back }: { back: () => void }) {
   const arAnchorRef = useRef<ArAnchor | null>(null)
   const applyAnchor = (a: ArAnchor | null) => { arAnchorRef.current = a; setArAnchor(a) }
 
+  // seleção de elemento (atributos + anotação)
+  const [selectedGid, setSelectedGid] = useState<string | null>(null)
+  const [elemInfo, setElemInfo] = useState<ElementInfo | null>(null)
+  const [infoLoading, setInfoLoading] = useState(false)
+  const [annotations, setAnnotations] = useState<Record<string, Annotation>>({})
+  // árvore do modelo
+  const [treeOpen, setTreeOpen] = useState(false)
+  const [tree, setTree] = useState<TreeModel[]>([])
+  // renomear projeto salvo
+  const [savedEditId, setSavedEditId] = useState<string | null>(null)
+  const [savedEditName, setSavedEditName] = useState("")
+
   useEffect(() => { pinsRef.current = pins }, [pins])
+  useEffect(() => { annRef.current = annotations }, [annotations])
   useEffect(() => { if (selected) setEditName(selected.name) }, [selected])
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2200) }
+  const refreshTree = () => setTree(engineRef.current?.getTree() ?? [])
 
   useEffect(() => {
     if (!canvasRef.current) return
@@ -60,6 +78,7 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     }
     eng.onPinClick = (id) => { const p = pinsRef.current.find((x) => x.id === id); if (p) setSelected(p) }
     eng.onSelectionChange = (s, h) => { setSelCount(s); setHiddenCount(h) }
+    eng.onSelect = (gid) => setSelectedGid(gid)
     eng.onPlaceAnchor = (pos, normal) => {
       if (Math.abs(normal[1]) > 0.6) { showToast("A folha só pode ser fixada numa parede (superfície vertical)"); return }
       const headingDeg = (Math.atan2(normal[0], normal[2]) * 180) / Math.PI
@@ -73,21 +92,56 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     return () => { eng.dispose(); engineRef.current = null }
   }, [])
 
-  async function loadBytes(blob: Blob) {
+  // busca os atributos do elemento selecionado (assíncrono)
+  useEffect(() => {
+    const eng = engineRef.current
+    if (!selectedGid || !eng) { setElemInfo(null); setInfoLoading(false); return }
+    let alive = true
+    setInfoLoading(true); setElemInfo(null)
+    eng.getElementInfo(selectedGid).then((info) => { if (alive) { setElemInfo(info); setInfoLoading(false) } })
+    return () => { alive = false }
+  }, [selectedGid])
+
+  /** carrega uma lista de modelos (federação) do zero */
+  async function loadModelsList(models: ModelRef[]) {
     const eng = engineRef.current; if (!eng) return
-    setError(null); setProgress(0.1)
+    setError(null); setProgress(0.03)
     try {
-      await eng.loadIFC(new Uint8Array(await blob.arrayBuffer()), setProgress)
-      ifcBlob.current = blob
+      eng.clearModels()
+      for (let i = 0; i < models.length; i++) {
+        const bytes = new Uint8Array(await models[i].blob.arrayBuffer())
+        await eng.addModel(bytes, models[i].name, (p) => setProgress((i + p) / models.length))
+      }
+      modelsRef.current = models
+      refreshTree()
       setLoaded(true)
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
     finally { setProgress(null) }
   }
 
   const onIfc = async (e: ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]; e.target.value = ""; if (!f) return
-    projectId.current = newId(); setProjectName(f.name.replace(/\.[^.]+$/, "")); setPins([])
-    await loadBytes(f)
+    const files = Array.from(e.target.files ?? []); e.target.value = ""; if (!files.length) return
+    projectId.current = newId()
+    setProjectName(files.length === 1 ? files[0].name.replace(/\.[^.]+$/, "") : `Compatibilização (${files.length} modelos)`)
+    setPins([]); setSelectedGid(null); setAnnotations({}); annRef.current = {}; applyAnchor(null)
+    await loadModelsList(files.map((f) => ({ name: f.name.replace(/\.[^.]+$/, ""), blob: f })))
+  }
+
+  // adiciona 1+ IFC ao projeto atual (compatibilização) sem apagar o que já existe
+  const onAddIfc = async (e: ChangeEvent<HTMLInputElement>) => {
+    const eng = engineRef.current; const files = Array.from(e.target.files ?? []); e.target.value = ""
+    if (!eng || !files.length) return
+    setError(null); setProgress(0.03)
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i]
+        const bytes = new Uint8Array(await f.arrayBuffer())
+        await eng.addModel(bytes, f.name.replace(/\.[^.]+$/, ""), (p) => setProgress((i + p) / files.length))
+        modelsRef.current = [...modelsRef.current, { name: f.name.replace(/\.[^.]+$/, ""), blob: f }]
+      }
+      refreshTree(); await persist(pinsRef.current); showToast(`${files.length} modelo(s) adicionado(s) ✓`)
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    finally { setProgress(null) }
   }
 
   async function loadExample() {
@@ -95,8 +149,9 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     try {
       const base = import.meta.env.BASE_URL
       projectId.current = newId(); setProjectName("Exemplo — Casa FZK"); setPins([])
+      setSelectedGid(null); setAnnotations({}); annRef.current = {}; applyAnchor(null)
       const ifc = await (await fetch(`${base}samples/casa-fzk-haus.ifc`)).blob()
-      await loadBytes(ifc)
+      await loadModelsList([{ name: "Casa FZK", blob: ifc }])
       const [panoSuite, panoSala] = await Promise.all([
         fetch(`${base}samples/quarto-suite-360.jpg`).then((r) => r.blob()),
         fetch(`${base}samples/sala-360.jpg`).then((r) => r.blob()),
@@ -114,18 +169,24 @@ export default function ProjectScreen({ back }: { back: () => void }) {
   async function openSaved(id: string) {
     const p = await getProject(id); if (!p) return
     projectId.current = p.id; setProjectName(p.name); setPins(p.pins)
-    await loadBytes(p.ifc)
+    const ann = p.annotations ?? {}; setAnnotations(ann); annRef.current = ann
+    await loadModelsList(projectModels(p))
     const eng = engineRef.current
     if (eng) {
       p.pins.forEach((pin) => eng.addPinSprite(pin.id, pin.pos))
       if (p.arAnchor) { applyAnchor(p.arAnchor); eng.showAnchor(p.arAnchor.pos, p.arAnchor.heading) }
       else applyAnchor(null)
+      for (const [gid, a] of Object.entries(ann)) eng.annotate(gid, a.color ?? null, !!a.note)
     }
   }
 
   async function persist(list: Pin[]) {
-    if (!ifcBlob.current || !projectId.current) return
-    await saveProject({ id: projectId.current, name: projectName, ifc: ifcBlob.current, pins: list, arAnchor: arAnchorRef.current ?? undefined, updatedAt: Date.now() })
+    const models = modelsRef.current
+    if (!models.length || !projectId.current) return
+    await saveProject({
+      id: projectId.current, name: projectName, ifc: models[0].blob, models, pins: list,
+      arAnchor: arAnchorRef.current ?? undefined, annotations: annRef.current, updatedAt: Date.now(),
+    })
     listProjects().then(setSaved)
   }
 
@@ -159,6 +220,25 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     await persist(list)
   }
 
+  // ---- anotações (nota + cor) ----
+  const updateAnnotation = (gid: string, a: Annotation) => {
+    const clean: Annotation | null = (a.color || a.note) ? a : null
+    const map = { ...annRef.current }
+    if (clean) map[gid] = clean; else delete map[gid]
+    annRef.current = map; setAnnotations(map)
+    engineRef.current?.annotate(gid, clean?.color ?? null, !!clean?.note)
+    persist(pinsRef.current)
+  }
+  const setElemColor = (color: string | null) => {
+    if (!selectedGid) return
+    updateAnnotation(selectedGid, { ...(annRef.current[selectedGid] ?? {}), color: color ?? undefined })
+  }
+  const setElemNote = (note: string) => {
+    if (!selectedGid) return
+    updateAnnotation(selectedGid, { ...(annRef.current[selectedGid] ?? {}), note: note || undefined })
+  }
+  const closeInfo = () => { engineRef.current?.clearSelection() }
+
   const enterModelVR = (pin?: Pin) => {
     const eng = engineRef.current; if (!eng) return
     if (pin) eng.applyView(pin.view)
@@ -183,6 +263,12 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     if (!confirm("Excluir este projeto salvo? Não dá para desfazer.")) return
     await deleteProject(id); setSaved(await listProjects())
   }
+  const commitSavedRename = async () => {
+    if (!savedEditId) return
+    await renameProject(savedEditId, savedEditName)
+    if (savedEditId === projectId.current) setProjectName(savedEditName.trim() || projectName)
+    setSavedEditId(null); setSaved(await listProjects())
+  }
 
   // ---- Modo RA (marcador A4) ----
   const startAr = () => {
@@ -202,7 +288,8 @@ export default function ProjectScreen({ back }: { back: () => void }) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0">
       <canvas ref={canvasRef} className="fixed inset-0 block" style={{ touchAction: "none" }} />
-      <input ref={ifcInput} type="file" accept=".ifc" hidden onChange={onIfc} />
+      <input ref={ifcInput} type="file" accept=".ifc" multiple hidden onChange={onIfc} />
+      <input ref={addIfcInput} type="file" accept=".ifc" multiple hidden onChange={onAddIfc} />
       <input ref={panoInput} type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) setPendingPano(f) }} />
 
       {!vrMode && <TopBar title={loaded ? projectName : "Projeto BIM + 360°"} tag="Modelo IFC · Pinos 360 · RV" onBack={back} />}
@@ -234,7 +321,7 @@ export default function ProjectScreen({ back }: { back: () => void }) {
           </div>
           <h2 className="text-xl font-bold">Projeto BIM + 360°</h2>
           <p className="mx-auto mt-2 max-w-xs text-sm text-muted-foreground">
-            Carregue um <b className="text-foreground">.ifc</b>, fixe <b className="text-foreground">pinos 360°</b> em pontos do modelo e veja tudo em <b className="text-foreground">RV</b>.
+            Carregue um ou mais <b className="text-foreground">.ifc</b> (compatibilização), fixe <b className="text-foreground">pinos 360°</b> e veja tudo em <b className="text-foreground">RV</b>.
           </p>
           <Button size="lg" className="mt-6" onClick={() => ifcInput.current?.click()}><Upload className="h-5 w-5" /> Carregar IFC</Button>
           <Button variant="outline" className="mt-3" onClick={loadExample}><Sparkles className="h-4 w-4" /> Carregar exemplo (casa + 2 ambientes 360°)</Button>
@@ -246,11 +333,27 @@ export default function ProjectScreen({ back }: { back: () => void }) {
               <div className="flex flex-col gap-2">
                 {saved.map((p) => (
                   <div key={p.id} className="flex items-center gap-2 rounded-lg border border-border bg-secondary/40 p-2 hover:bg-secondary">
-                    <button onClick={() => openSaved(p.id)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                      {p.cover ? <img src={p.cover} alt="" className="h-10 w-16 rounded object-cover" /> : <div className="grid h-10 w-16 place-items-center rounded bg-secondary"><Building2 className="h-4 w-4 text-muted-foreground" /></div>}
-                      <div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{p.name}</div><div className="text-[11px] text-muted-foreground">{p.pinCount} pino(s)</div></div>
-                    </button>
-                    <button onClick={() => delSaved(p.id)} aria-label="Excluir projeto" className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-red-400 hover:bg-red-500/10"><Trash2 className="h-4 w-4" /></button>
+                    {savedEditId === p.id ? (
+                      <div className="flex flex-1 items-center gap-2">
+                        <input
+                          autoFocus value={savedEditName}
+                          onChange={(e) => setSavedEditName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") commitSavedRename(); if (e.key === "Escape") setSavedEditId(null) }}
+                          className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-sm focus:border-primary focus:outline-none"
+                        />
+                        <button onClick={commitSavedRename} aria-label="Salvar nome" className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-primary hover:bg-primary/10"><Check className="h-4 w-4" /></button>
+                        <button onClick={() => setSavedEditId(null)} aria-label="Cancelar" className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-secondary"><X className="h-4 w-4" /></button>
+                      </div>
+                    ) : (
+                      <>
+                        <button onClick={() => openSaved(p.id)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                          {p.cover ? <img src={p.cover} alt="" className="h-10 w-16 rounded object-cover" /> : <div className="grid h-10 w-16 place-items-center rounded bg-secondary"><Building2 className="h-4 w-4 text-muted-foreground" /></div>}
+                          <div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{p.name}</div><div className="text-[11px] text-muted-foreground">{p.pinCount} pino(s) · {p.modelCount} modelo(s)</div></div>
+                        </button>
+                        <button onClick={() => { setSavedEditId(p.id); setSavedEditName(p.name) }} aria-label="Renomear projeto" className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-secondary"><Pencil className="h-4 w-4" /></button>
+                        <button onClick={() => delSaved(p.id)} aria-label="Excluir projeto" className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-red-400 hover:bg-red-500/10"><Trash2 className="h-4 w-4" /></button>
+                      </>
+                    )}
                   </div>
                 ))}
               </div>
@@ -271,6 +374,20 @@ export default function ProjectScreen({ back }: { back: () => void }) {
       {/* Setas de locomoção (topo) — escondidas durante seleção p/ não sobrepor */}
       {loaded && !vrMode && !placing && selCount === 0 && <MoveControls engine={engineRef.current} />}
 
+      {/* Painel de ATRIBUTOS + anotação do elemento selecionado */}
+      <AnimatePresence>
+        {loaded && !vrMode && !arMode && selectedGid && (
+          <ElementInfoPanel
+            info={elemInfo} loading={infoLoading}
+            annotation={annotations[selectedGid] ?? {}}
+            onColor={setElemColor} onNote={setElemNote}
+            onHide={() => engineRef.current?.hideSelected()}
+            onIsolate={() => engineRef.current?.isolateSelected()}
+            onClose={closeInfo}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Painel de edição de vista do pino */}
       {loaded && !vrMode && !arMode && editingPin && (
         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="glass fixed inset-x-0 bottom-0 z-20 flex flex-col gap-2 border-t border-border px-4 py-3 safe-bottom">
@@ -286,10 +403,12 @@ export default function ProjectScreen({ back }: { back: () => void }) {
       {loaded && !vrMode && !arMode && !editingPin && (
         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="glass fixed inset-x-0 bottom-0 z-20 flex flex-col gap-2 border-t border-border px-4 py-3 safe-bottom">
           <p className="text-center text-[11px] text-muted-foreground">
-            {placing ? "👆 Toque no ponto do modelo para fixar o pino" : `📍 ${pins.length} pino(s) · setas p/ andar · toque num elemento p/ selecionar · num pino p/ abrir`}
+            {placing ? "👆 Toque no ponto do modelo para fixar o pino" : `📍 ${pins.length} pino(s) · ${modelsRef.current.length} modelo(s) · WASD/setas p/ andar · toque num elemento p/ ver atributos`}
           </p>
           <div className="flex flex-wrap items-center justify-center gap-2">
-            <Button variant="secondary" size="icon" onClick={() => ifcInput.current?.click()} aria-label="Trocar IFC"><RefreshCw className="h-4 w-4" /></Button>
+            <Button variant="secondary" size="icon" onClick={() => ifcInput.current?.click()} aria-label="Novo IFC (troca o projeto)"><RefreshCw className="h-4 w-4" /></Button>
+            <Button variant="secondary" size="sm" onClick={() => addIfcInput.current?.click()}><Layers className="h-4 w-4" /> + Modelo</Button>
+            <Button variant="secondary" size="sm" onClick={() => { refreshTree(); setTreeOpen(true) }}><ListTree className="h-4 w-4" /> Árvore</Button>
             <Button variant={placing ? "default" : "secondary"} size="sm" onClick={togglePlacing}><MapPin className="h-4 w-4" /> {placing ? "Cancelar" : "Pino 360"}</Button>
             <Button variant="secondary" size="icon" onClick={() => setPinsMenu(true)} aria-label="Lista de pinos" disabled={!pins.length}><List className="h-4 w-4" /></Button>
             <Button variant="secondary" size="sm" onClick={startAr}><Scan className="h-4 w-4" /> RA</Button>
@@ -396,8 +515,22 @@ export default function ProjectScreen({ back }: { back: () => void }) {
         </SheetContent>
       </Sheet>
 
+      {/* Sheet: árvore do modelo (disciplina/categoria + raio-X) */}
+      <Sheet open={treeOpen} onOpenChange={setTreeOpen}>
+        <SheetContent side="bottom" className="mx-auto max-w-md">
+          <SheetTitle className="mb-2 flex items-center gap-2"><ListTree className="h-4 w-4 text-primary" /> Árvore do modelo</SheetTitle>
+          <ModelTree
+            tree={tree}
+            onModelVisible={(mi, v) => { engineRef.current?.setModelVisible(mi, v); refreshTree() }}
+            onModelOpacity={(mi, op) => { engineRef.current?.setModelOpacity(mi, op); refreshTree() }}
+            onTypeVisible={(mi, t, v) => { engineRef.current?.setTypeVisible(mi, t, v); refreshTree() }}
+            onTypeOpacity={(mi, t, op) => { engineRef.current?.setTypeOpacity(mi, t, op); refreshTree() }}
+          />
+        </SheetContent>
+      </Sheet>
+
       {/* Overlay 360 do pino */}
-      {pano360 && <Pano360Overlay pano={pano360.pano} name={pano360.name} onClose={() => setPano360(null)} />}
+      {pano360 && <Pano360Overlay pins={pins} startId={pano360.id} onClose={() => setPano360(null)} />}
 
       {/* toast */}
       {toast && <div className="fixed bottom-24 left-1/2 z-50 -translate-x-1/2 rounded-full bg-foreground px-4 py-2 text-xs font-semibold text-background shadow-lg">{toast}</div>}

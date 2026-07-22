@@ -1,5 +1,5 @@
 import { useEffect, type PointerEvent as ReactPointerEvent } from "react"
-import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, ChevronsUp, ChevronsDown } from "lucide-react"
+import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, ChevronsUp, ChevronsDown, RotateCcw, RotateCw } from "lucide-react"
 import type { VrIfcEngine } from "@/engine/VrIfcEngine"
 
 // Setas de locomoção no modelo (estilo analógico): segurar = anda, soltar = para.
@@ -34,10 +34,14 @@ export function MoveControls({ engine }: { engine: VrIfcEngine | null }) {
         </div>
       </div>
 
-      {/* Subir / descer (topo direito) */}
+      {/* Subir / descer + girar a vista (topo direito) */}
       <div className="fixed right-3 z-20 flex flex-col gap-1 select-none" style={topPos}>
         <button className={cls} {...hold(() => engine?.setUp(1))} aria-label="Subir"><ChevronsUp className="h-5 w-5" /></button>
         <button className={cls} {...hold(() => engine?.setUp(-1))} aria-label="Descer"><ChevronsDown className="h-5 w-5" /></button>
+        <div className="mt-1 flex gap-1">
+          <button className={cls} {...hold(() => engine?.setRotate(1))} aria-label="Girar vista à esquerda"><RotateCcw className="h-5 w-5" /></button>
+          <button className={cls} {...hold(() => engine?.setRotate(-1))} aria-label="Girar vista à direita"><RotateCw className="h-5 w-5" /></button>
+        </div>
       </div>
     </>
   )

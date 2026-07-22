@@ -17,16 +17,26 @@ export interface ArAnchor {
   pos: [number, number, number]  // ponto do modelo onde a folha A4 fica fixada
   heading: number                // giro em torno da vertical (graus)
 }
+export interface ModelRef {
+  name: string                   // nome/disciplina do modelo (ex.: "Arquitetura")
+  blob: Blob                     // arquivo IFC
+}
+export interface Annotation {
+  color?: string                 // cor de pintura (hex "#ef4444") ou ausente
+  note?: string                  // observação de texto
+}
 export interface Project {
   id: string
   name: string
-  ifc: Blob                      // arquivo IFC do modelo
+  ifc: Blob                      // 1º modelo — mantido p/ compatibilidade (ar.html + projetos antigos)
+  models?: ModelRef[]            // modelos federados (inclui o 1º). Ausente = [{ name, blob: ifc }]
   pins: Pin[]
   arAnchor?: ArAnchor            // âncora do marcador A4 (Realidade Aumentada)
+  annotations?: Record<string, Annotation> // chave "modelIndex:expressID"
   updatedAt: number
 }
 export interface ProjectMeta {
-  id: string; name: string; updatedAt: number; pinCount: number; cover?: string
+  id: string; name: string; updatedAt: number; pinCount: number; modelCount: number; cover?: string
 }
 
 const DB = "canteiroxr"
@@ -70,11 +80,25 @@ export function getProject(id: string): Promise<Project | undefined> {
 export function deleteProject(id: string): Promise<undefined> {
   return tx<undefined>("readwrite", (s) => s.delete(id) as IDBRequest<undefined>)
 }
+/** renomeia um projeto salvo sem recarregar o modelo (lê, troca o nome, grava) */
+export async function renameProject(id: string, name: string): Promise<void> {
+  const p = await getProject(id); if (!p) return
+  p.name = name.trim() || p.name
+  await saveProject(p)
+}
 export async function listProjects(): Promise<ProjectMeta[]> {
   const all = await tx<Project[]>("readonly", (s) => s.getAll() as IDBRequest<Project[]>)
   return all
-    .map((p) => ({ id: p.id, name: p.name, updatedAt: p.updatedAt, pinCount: p.pins.length, cover: p.pins[0]?.thumb }))
+    .map((p) => ({
+      id: p.id, name: p.name, updatedAt: p.updatedAt, pinCount: p.pins.length,
+      modelCount: p.models?.length ?? 1, cover: p.pins[0]?.thumb,
+    }))
     .sort((a, b) => b.updatedAt - a.updatedAt)
+}
+/** normaliza o projeto p/ a forma federada (compatível com projetos antigos de 1 IFC) */
+export function projectModels(p: Project): ModelRef[] {
+  if (p.models && p.models.length) return p.models
+  return [{ name: p.name || "Modelo", blob: p.ifc }]
 }
 
 export function newId(): string {

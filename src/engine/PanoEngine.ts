@@ -28,6 +28,10 @@ export class PanoEngine extends ImmersiveEngine {
   private linkMode = false
   private pending: { yaw: number; pitch: number } | null = null
 
+  // transição suave (cross-fade através do preto) entre cenas 360
+  private fadeTarget: number | null = null
+  private fadePhase: "out" | "in" = "out"
+
   onScenesChange?: () => void
   onSceneChange?: (id: number | null) => void
   onPlaceHotspot?: () => void
@@ -128,6 +132,40 @@ export class PanoEngine extends ImmersiveEngine {
       this.hotGroup.add(sp)
     })
   }
+  /** vai para outra cena 360 com transição suave (fade). Não altera showScene(). */
+  transitionToScene(id: number): void {
+    if (id === this.curId || !this.getScene(id) || this.fadeTarget != null) return
+    this.fadeTarget = id
+    this.fadePhase = "out"
+    this.sphereMat.transparent = true
+  }
+  /** próxima / anterior cena na ordem da lista (para o ícone "próxima visão") */
+  nextScene(dir = 1): void {
+    if (this.scenes.length < 2 || this.curId == null) return
+    const i = this.scenes.findIndex((s) => s.id === this.curId)
+    const n = (i + dir + this.scenes.length) % this.scenes.length
+    this.transitionToScene(this.scenes[n].id)
+  }
+  private stepFade(): void {
+    if (this.fadeTarget == null) return
+    const speed = 0.07
+    if (this.fadePhase === "out") {
+      this.hotGroup.visible = false
+      this.sphereMat.opacity = Math.max(0, this.sphereMat.opacity - speed)
+      if (this.sphereMat.opacity <= 0.001) {
+        this.showScene(this.fadeTarget)   // troca a textura no ponto mais escuro
+        this.sphereMat.transparent = true; this.sphereMat.opacity = 0
+        this.fadePhase = "in"
+      }
+    } else {
+      this.sphereMat.opacity = Math.min(1, this.sphereMat.opacity + speed)
+      if (this.sphereMat.opacity >= 0.999) {
+        this.sphereMat.opacity = 1; this.sphereMat.transparent = false
+        this.hotGroup.visible = true; this.fadeTarget = null
+      }
+    }
+  }
+
   setLinkMode(on: boolean): void { this.linkMode = on; if (!on) this.pending = null }
   isLinkMode(): boolean { return this.linkMode }
   commitHotspot(target: number): void {
@@ -186,6 +224,7 @@ export class PanoEngine extends ImmersiveEngine {
     this.scenes.forEach((s) => { if (s.url.startsWith("blob:")) URL.revokeObjectURL(s.url) })
   }
   protected renderMono() {
+    this.stepFade()
     if (this.gyroActive && this.useGyro) {
       this.camera.quaternion.copy(this.gyroQuat)
     } else {
