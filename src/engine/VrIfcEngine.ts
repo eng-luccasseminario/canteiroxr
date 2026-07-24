@@ -128,10 +128,6 @@ export class VrIfcEngine extends ImmersiveEngine {
     const dl = new THREE.DirectionalLight(0xffffff, 1.3)
     dl.position.set(1, 2, 1)
     this.scene.add(dl)
-    const grid = new THREE.GridHelper(400, 80, 0x3a557f, 0x223350)
-    ;(grid.material as THREE.Material).opacity = 0.35
-    ;(grid.material as THREE.Material).transparent = true
-    this.scene.add(grid)
     this.scene.add(this.pinGroup)
     this.scene.add(this.markerGroup)
     this.pinTex = this.makePinTexture()
@@ -203,12 +199,11 @@ export class VrIfcEngine extends ImmersiveEngine {
     if (!this.modelGroup) { this.modelGroup = new THREE.Group(); this.scene.add(this.modelGroup) }
 
     const mi = this.modelIDs.length
-    // 1º modelo: leva à origem e guarda a matriz de coordenação; seguintes: mantêm
-    // as coordenadas originais e recebem a MESMA matriz — preserva o alinhamento
-    // georreferenciado entre disciplinas sem perder precisão longe da origem
+    // 1º modelo: leva à origem; seguintes: mantêm as coordenadas originais e recebem
+    // a MESMA matriz de coordenação do 1º — preserva o alinhamento georreferenciado
+    // entre disciplinas sem perder precisão longe da origem
     const mid = this.ifcAPI.OpenModel(bytes, { COORDINATE_TO_ORIGIN: mi === 0 })
-    if (mi === 0) this.baseCoordMatrix = Array.from(this.ifcAPI.GetCoordinationMatrix(mid))
-    else if (this.baseCoordMatrix) this.ifcAPI.SetGeometryTransformation(mid, this.baseCoordMatrix)
+    if (mi > 0 && this.baseCoordMatrix) this.ifcAPI.SetGeometryTransformation(mid, this.baseCoordMatrix)
     this.modelIDs.push(mid); this.modelNames.push(name)
     this.modelVisible.push(true); this.modelOpacity.push(1)
 
@@ -258,6 +253,11 @@ export class VrIfcEngine extends ImmersiveEngine {
     })
     onProgress?.(0.85)
     if (!count && mi === 0) throw new Error("modelo sem geometria")
+    // a matriz de coordenação só existe DEPOIS da geração da geometria (StreamAllMeshes)
+    if (mi === 0) {
+      const m = Array.from(this.ifcAPI.GetCoordinationMatrix(mid) ?? [])
+      this.baseCoordMatrix = m.length === 16 ? (m as number[]) : null
+    }
 
     this.recomputeBounds()
     if (mi === 0) this.frameModel() // só reenquadra no 1º modelo; ao compatibilizar, mantém a vista
