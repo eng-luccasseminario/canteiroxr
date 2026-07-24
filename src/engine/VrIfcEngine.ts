@@ -1,7 +1,7 @@
 import * as THREE from "three"
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js"
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js"
-import { IfcAPI } from "web-ifc"
+import { IfcAPI, IFCPROJECT, IFCSITE, IFCBUILDING, IFCBUILDINGSTOREY, IFCRELAGGREGATES, IFCRELCONTAINEDINSPATIALSTRUCTURE } from "web-ifc"
 import { ImmersiveEngine } from "./ImmersiveEngine"
 import type { SavedView } from "@/lib/projectDb"
 
@@ -25,8 +25,15 @@ export function labelForType(t: string): string {
   return TYPE_LABELS[t] ?? t.replace(/^IFC/, "").toLowerCase().replace(/^\w/, (c) => c.toUpperCase())
 }
 
-export interface TreeType { type: string; label: string; count: number; visible: boolean; opacity: number; gids: string[] }
-export interface TreeModel { index: number; name: string; count: number; visible: boolean; opacity: number; types: TreeType[] }
+// nó da árvore espacial (norma: Obra > Terreno > Edificação > Pavimento > Categoria)
+export interface TreeNode {
+  key: string; label: string; sub?: string
+  kind: "site" | "building" | "storey" | "group" | "category"
+  count: number; gids: string[]
+  visible: boolean; opacity: number
+  children: TreeNode[]
+}
+export interface TreeModel { index: number; name: string; count: number; visible: boolean; opacity: number; nodes: TreeNode[] }
 export interface ElementInfo {
   gid: string; modelName: string; type: string; typeLabel: string
   name: string; globalId: string
@@ -34,12 +41,6 @@ export interface ElementInfo {
   attrs: [string, string][]
   psets: { name: string; props: [string, string][] }[]   // psets técnicos (sem a ficha)
 }
-export interface AssetRow {
-  gid: string; modelName: string; categoria: string; nome: string
-  codigo: string; fabricante: string; valor: string; validade: string
-  vida: string; operacao: string; om: string; status: string; globalId: string
-}
-
 const ASSET_PSET = "Dados do Ativo"
 const ASSET_ORDER = ["Categoria", "Código do ativo", "Fabricante", "Valor (R$)", "Validade / Garantia", "Vida útil estimada", "Operação", "Plano de manutenção", "Status"]
 const normKey = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim()
@@ -62,10 +63,12 @@ export class VrIfcEngine extends ImmersiveEngine {
   private modelNames: string[] = []
   private modelVisible: boolean[] = []
   private modelOpacity: number[] = []
-  private typeOf = new Map<string, string>()        // gid -> tipo IFC
-  private typeGids = new Map<string, string[]>()     // "mi:TIPO" -> [gid]
-  private typeVisible = new Map<string, boolean>()   // "mi:TIPO" -> visível
-  private typeOpacity = new Map<string, number>()    // "mi:TIPO" -> opacidade
+  private typeOf = new Map<string, string>()          // gid -> tipo IFC
+  private spatialTrees: TreeNode[][] = []             // árvore espacial estática por modelo
+  private nodeGids = new Map<string, string[]>()      // chave do nó -> gids descendentes
+  private nodeVisible = new Map<string, boolean>()
+  private nodeOpacity = new Map<string, number>()
+  private ancestorsOf = new Map<string, string[]>()   // gid -> cadeia de nós (visibilidade herdada)
   private centroid = new Map<string, THREE.Vector3>()
 
   // pinos 360
@@ -101,17 +104,13 @@ export class VrIfcEngine extends ImmersiveEngine {
   private paintCache = new Map<string, THREE.MeshLambertMaterial>()
   onSelectionChange?: (selCount: number, hiddenCount: number) => void
   onSelect?: (gid: string | null) => void
+  onMarkerClick?: (gid: string, x: number, y: number) => void   // toque no "!" (popup da observação)
 
   // anotações (nota + cor) e marcadores "!"
   private paint = new Map<string, string>()   // gid -> hex
   private markerGroup = new THREE.Group()
   private markers = new Map<string, THREE.Sprite>()
   private markerTex: THREE.CanvasTexture
-
-  // âncora do marcador A4 (Realidade Aumentada)
-  private anchorGroup: THREE.Group | null = null
-  private arPlacing = false
-  onPlaceAnchor?: (pos: [number, number, number], normal: [number, number, number]) => void
 
   constructor(canvas: HTMLCanvasElement) {
     super(canvas)
@@ -184,7 +183,8 @@ export class VrIfcEngine extends ImmersiveEngine {
     this.meshes.clear(); this.selection.clear(); this.hidden.clear()
     this.modelIDs = []; this.modelNames = []; this.modelVisible = []; this.modelOpacity = []
     this.baseCoordMatrix = null
-    this.typeOf.clear(); this.typeGids.clear(); this.typeVisible.clear(); this.typeOpacity.clear()
+    this.typeOf.clear(); this.spatialTrees = []
+    this.nodeGids.clear(); this.nodeVisible.clear(); this.nodeOpacity.clear(); this.ancestorsOf.clear()
     this.centroid.clear(); this.paint.clear()
     for (const s of this.markers.values()) { this.markerGroup.remove(s); s.material.dispose() }
     this.markers.clear()
@@ -244,8 +244,6 @@ export class VrIfcEngine extends ImmersiveEngine {
       let type = "IFCUNKNOWN"
       try { type = this.ifcAPI.GetNameFromTypeCode(this.ifcAPI.GetLineType(mid, flat.expressID)) || type } catch { /* ignora */ }
       this.typeOf.set(gid, type)
-      const tk = `${mi}:${type}`
-      const arr = this.typeGids.get(tk); if (arr) arr.push(gid); else this.typeGids.set(tk, [gid])
       // centróide (posição do marcador "!")
       merged.computeBoundingBox()
       this.centroid.set(gid, merged.boundingBox!.getCenter(new THREE.Vector3()))
@@ -258,6 +256,11 @@ export class VrIfcEngine extends ImmersiveEngine {
       const m = Array.from(this.ifcAPI.GetCoordinationMatrix(mid) ?? [])
       this.baseCoordMatrix = m.length === 16 ? (m as number[]) : null
     }
+
+    // árvore espacial da norma (Terreno > Edificação > Pavimento) + índice de ancestrais
+    try { this.spatialTrees[mi] = this.buildSpatialTree(mid, mi) }
+    catch { this.spatialTrees[mi] = this.categoryOnlyTree(mi) }
+    for (const n of this.spatialTrees[mi]) this.registerNode(n, [])
 
     this.recomputeBounds()
     if (mi === 0) this.frameModel() // só reenquadra no 1º modelo; ao compatibilizar, mantém a vista
@@ -293,6 +296,17 @@ export class VrIfcEngine extends ImmersiveEngine {
   goToCenter() {
     this.camera.position.copy(this.center)
     this.controls.target.set(this.center.x, this.center.y, this.center.z - 0.001)
+    this.controls.update()
+  }
+
+  /** aproxima a câmera de um elemento (lista de observações) mantendo a direção da vista */
+  focusElement(gid: string) {
+    const c = this.centroid.get(gid); if (!c) return
+    const dir = this.camera.position.clone().sub(this.controls.target)
+    if (dir.lengthSq() < 1e-6) dir.set(1, 0.7, 1)
+    dir.normalize()
+    this.controls.target.copy(c)
+    this.camera.position.copy(c).addScaledVector(dir, Math.max(this.maxDim * 0.12, 2))
     this.controls.update()
   }
   protected onExitVR() { this.controls.enabled = true }
@@ -378,20 +392,11 @@ export class VrIfcEngine extends ImmersiveEngine {
       if (hit) this.onPlacePin?.([hit.point.x, hit.point.y, hit.point.z])
       return
     }
-    if (this.arPlacing) {
-      if (!this.modelGroup) return
-      const hit = this.ray.intersectObjects(this.modelGroup.children, false).find((h) => h.object.visible !== false)
-      if (hit && hit.face) {
-        const nrm = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize()
-        this.onPlaceAnchor?.([hit.point.x, hit.point.y, hit.point.z], [nrm.x, nrm.y, nrm.z])
-      }
-      return
-    }
     const pinHit = this.ray.intersectObjects(this.pinGroup.children)[0]
     if (pinHit) { this.onPinClick?.(pinHit.object.userData.id as string); return }
-    // marcador "!" (observação): clicar seleciona o elemento e abre o painel c/ a nota
+    // marcador "!" (observação): abre popup com a nota ao lado do toque
     const mkHit = this.ray.intersectObjects(this.markerGroup.children)[0]
-    if (mkHit) { const gid = (mkHit.object.userData as { gid?: string }).gid; if (gid) { this.clearSelection(); this.selectElement(gid) } return }
+    if (mkHit) { const gid = (mkHit.object.userData as { gid?: string }).gid; if (gid) this.onMarkerClick?.(gid, e.clientX, e.clientY); return }
     if (this.modelGroup) {
       const hits = this.ray.intersectObjects(this.modelGroup.children, false)
       const m = hits.find((h) => h.object.visible !== false)
@@ -422,13 +427,15 @@ export class VrIfcEngine extends ImmersiveEngine {
   }
   private effectiveOpacity(gid: string): number {
     const mi = Number(gid.split(":")[0])
-    const type = this.typeOf.get(gid) ?? ""
-    return Math.min(this.modelOpacity[mi] ?? 1, this.typeOpacity.get(`${mi}:${type}`) ?? 1)
+    let op = this.modelOpacity[mi] ?? 1
+    for (const k of this.ancestorsOf.get(gid) ?? []) op = Math.min(op, this.nodeOpacity.get(k) ?? 1)
+    return op
   }
   private isGroupVisible(gid: string): boolean {
     const mi = Number(gid.split(":")[0])
-    const type = this.typeOf.get(gid) ?? ""
-    return (this.modelVisible[mi] !== false) && (this.typeVisible.get(`${mi}:${type}`) !== false)
+    if (this.modelVisible[mi] === false) return false
+    for (const k of this.ancestorsOf.get(gid) ?? []) if (this.nodeVisible.get(k) === false) return false
+    return true
   }
   /** aplica o estado visual correto a um elemento (visibilidade + material) */
   private refreshMesh(gid: string) {
@@ -483,31 +490,123 @@ export class VrIfcEngine extends ImmersiveEngine {
     this.emitSel()
   }
 
-  // ===================== ÁRVORE (disciplina / categoria) + RAIO-X =====================
-  getTree(): TreeModel[] {
-    return this.modelIDs.map((_, mi) => {
-      const types: TreeType[] = []
-      for (const [tk, gids] of this.typeGids) {
-        if (!tk.startsWith(`${mi}:`)) continue
-        const type = tk.slice(String(mi).length + 1)
-        types.push({
-          type, label: labelForType(type), count: gids.length,
-          visible: this.typeVisible.get(tk) !== false, opacity: this.typeOpacity.get(tk) ?? 1, gids,
-        })
+  // ===================== ÁRVORE ESPACIAL (norma: Obra > Terreno > Edificação > Pavimento) =====================
+  private line(mid: number, eid: number): Record<string, unknown> | null {
+    try { return this.ifcAPI.GetLine(mid, eid) as Record<string, unknown> } catch { return null }
+  }
+
+  /** agrupa gids por categoria (tipo IFC) como nós-folha */
+  private catNodes(parentKey: string, gids: string[]): TreeNode[] {
+    const byType = new Map<string, string[]>()
+    for (const g of gids) { const t = this.typeOf.get(g) ?? "IFCUNKNOWN"; const a = byType.get(t); if (a) a.push(g); else byType.set(t, [g]) }
+    const nodes: TreeNode[] = [...byType.entries()].map(([t, gs]) => ({
+      key: `${parentKey}/${t}`, label: labelForType(t), sub: `${gs.length}× · ${t.replace(/^IFC/, "")}`,
+      kind: "category", count: gs.length, gids: gs, visible: true, opacity: 1, children: [],
+    }))
+    return nodes.sort((a, b) => b.count - a.count)
+  }
+
+  /** fallback p/ IFC sem estrutura espacial: só categorias */
+  private categoryOnlyTree(mi: number): TreeNode[] {
+    const gids = [...this.meshes.keys()].filter((g) => g.startsWith(`${mi}:`))
+    if (!gids.length) return []
+    const key = `${mi}:s:all`
+    return [{ key, label: "Elementos", kind: "group", count: gids.length, gids, visible: true, opacity: 1, children: this.catNodes(key, gids) }]
+  }
+
+  private buildSpatialTree(mid: number, mi: number): TreeNode[] {
+    const vec = (v: { size(): number; get(i: number): number }): number[] => { const a: number[] = []; for (let i = 0; i < v.size(); i++) a.push(v.get(i)); return a }
+    const refIds = (x: unknown): number[] => (Array.isArray(x) ? x.map((r) => (r as { value: number }).value).filter((n) => n != null) : [])
+    const childrenOf = new Map<number, number[]>()   // decomposição espacial (IfcRelAggregates)
+    const contained = new Map<number, number[]>()    // elementos por pavimento (IfcRelContainedInSpatialStructure)
+    for (const relId of vec(this.ifcAPI.GetLineIDsWithType(mid, IFCRELAGGREGATES))) {
+      const rel = this.line(mid, relId); if (!rel) continue
+      const parent = (rel.RelatingObject as { value?: number } | null)?.value; if (parent == null) continue
+      const kids = refIds(rel.RelatedObjects)
+      const arr = childrenOf.get(parent); if (arr) arr.push(...kids); else childrenOf.set(parent, kids)
+    }
+    for (const relId of vec(this.ifcAPI.GetLineIDsWithType(mid, IFCRELCONTAINEDINSPATIALSTRUCTURE))) {
+      const rel = this.line(mid, relId); if (!rel) continue
+      const parent = (rel.RelatingStructure as { value?: number } | null)?.value; if (parent == null) continue
+      const kids = refIds(rel.RelatedElements)
+      const arr = contained.get(parent); if (arr) arr.push(...kids); else contained.set(parent, kids)
+    }
+
+    const typeCode = (eid: number): number => { try { return this.ifcAPI.GetLineType(mid, eid) } catch { return 0 } }
+    const isSpatial = (t: number) => t === IFCSITE || t === IFCBUILDING || t === IFCBUILDINGSTOREY
+    const kindOf = (t: number): "site" | "building" | "storey" => (t === IFCSITE ? "site" : t === IFCBUILDING ? "building" : "storey")
+    const FALLBACK = { site: "Terreno", building: "Edificação", storey: "Pavimento" }
+
+    // produtos com malha no subtree de decomposição (inclui conjuntos e IfcSpace)
+    const collectProducts = (eid: number, out: string[]) => {
+      const gid = `${mi}:${eid}`
+      if (this.meshes.has(gid)) out.push(gid)
+      for (const c of childrenOf.get(eid) ?? []) if (!isSpatial(typeCode(c))) collectProducts(c, out)
+    }
+
+    const makeSpatial = (eid: number, kind: "site" | "building" | "storey"): TreeNode | null => {
+      const key = `${mi}:s:${eid}`
+      const own: string[] = []
+      for (const c of contained.get(eid) ?? []) collectProducts(c, own)
+      for (const c of childrenOf.get(eid) ?? []) if (!isSpatial(typeCode(c))) collectProducts(c, own)
+      const sub: { n: TreeNode; elev: number }[] = []
+      for (const c of childrenOf.get(eid) ?? []) {
+        const t = typeCode(c); if (!isSpatial(t)) continue
+        const n = makeSpatial(c, kindOf(t)); if (!n) continue
+        const elev = t === IFCBUILDINGSTOREY ? Number(this.unwrap(this.line(mid, c)?.Elevation)) || 0 : 0
+        sub.push({ n, elev })
       }
-      types.sort((a, b) => b.count - a.count)
+      sub.sort((a, b) => a.elev - b.elev)
+      const gids = [...own, ...sub.flatMap((s) => s.n.gids)]
+      if (!gids.length) return null
+      const l = this.line(mid, eid)
+      const label = this.unwrap(l?.Name) || this.unwrap((l as { LongName?: unknown } | null)?.LongName) || FALLBACK[kind]
+      const children = [...this.catNodes(key, own), ...sub.map((s) => s.n)]
+      return { key, label, kind, count: gids.length, gids, visible: true, opacity: 1, children }
+    }
+
+    const roots: TreeNode[] = []
+    for (const pid of vec(this.ifcAPI.GetLineIDsWithType(mid, IFCPROJECT)))
+      for (const c of childrenOf.get(pid) ?? []) {
+        const t = typeCode(c); if (!isSpatial(t)) continue
+        const n = makeSpatial(c, kindOf(t)); if (n) roots.push(n)
+      }
+    // elementos fora da estrutura espacial
+    const assigned = new Set(roots.flatMap((r) => r.gids))
+    const rest = [...this.meshes.keys()].filter((g) => g.startsWith(`${mi}:`) && !assigned.has(g))
+    if (rest.length) {
+      const key = `${mi}:s:rest`
+      roots.push({ key, label: roots.length ? "Sem localização" : "Elementos", kind: "group", count: rest.length, gids: rest, visible: true, opacity: 1, children: this.catNodes(key, rest) })
+    }
+    return roots
+  }
+
+  /** indexa nó→gids e gid→cadeia de ancestrais (visibilidade/raio-x herdados) */
+  private registerNode(n: TreeNode, chain: string[]) {
+    this.nodeGids.set(n.key, n.gids)
+    const c2 = [...chain, n.key]
+    if (n.children.length) n.children.forEach((k) => this.registerNode(k, c2))
+    else for (const g of n.gids) this.ancestorsOf.set(g, c2)
+  }
+
+  getTree(): TreeModel[] {
+    const deco = (n: TreeNode): TreeNode => ({
+      ...n, visible: this.nodeVisible.get(n.key) !== false, opacity: this.nodeOpacity.get(n.key) ?? 1,
+      children: n.children.map(deco),
+    })
+    return this.modelIDs.map((_, mi) => {
+      const nodes = (this.spatialTrees[mi] ?? []).map(deco)
       return {
         index: mi, name: this.modelNames[mi] ?? `Modelo ${mi + 1}`,
-        count: types.reduce((s, t) => s + t.count, 0),
-        visible: this.modelVisible[mi] !== false, opacity: this.modelOpacity[mi] ?? 1, types,
+        count: nodes.reduce((s, n) => s + n.count, 0),
+        visible: this.modelVisible[mi] !== false, opacity: this.modelOpacity[mi] ?? 1, nodes,
       }
     })
   }
   setModelVisible(mi: number, v: boolean) { this.modelVisible[mi] = v; this.refreshModel(mi) }
   setModelOpacity(mi: number, op: number) { this.modelOpacity[mi] = op; this.refreshModel(mi) }
-  setTypeVisible(mi: number, type: string, v: boolean) { this.typeVisible.set(`${mi}:${type}`, v); this.refreshType(mi, type) }
-  setTypeOpacity(mi: number, type: string, op: number) { this.typeOpacity.set(`${mi}:${type}`, op); this.refreshType(mi, type) }
-  private refreshType(mi: number, type: string) { for (const gid of this.typeGids.get(`${mi}:${type}`) ?? []) this.refreshMesh(gid) }
+  setNodeVisible(key: string, v: boolean) { this.nodeVisible.set(key, v); for (const gid of this.nodeGids.get(key) ?? []) this.refreshMesh(gid) }
+  setNodeOpacity(key: string, op: number) { this.nodeOpacity.set(key, op); for (const gid of this.nodeGids.get(key) ?? []) this.refreshMesh(gid) }
   private refreshModel(mi: number) { for (const gid of this.meshes.keys()) if (gid.startsWith(`${mi}:`)) this.refreshMesh(gid) }
 
   // ===================== ATRIBUTOS DO ELEMENTO =====================
@@ -578,32 +677,6 @@ export class VrIfcEngine extends ImmersiveEngine {
     return { gid, modelName: this.modelNames[mi] ?? `Modelo ${mi + 1}`, type, typeLabel: labelForType(type), name, globalId, asset, attrs, psets }
   }
 
-  /** varre TODOS os elementos e extrai os campos de ativo (p/ exportar CSV) */
-  async getAllAssets(): Promise<AssetRow[]> {
-    const rows: AssetRow[] = []
-    for (const gid of this.meshes.keys()) {
-      const info = await this.getElementInfo(gid)
-      if (!info) continue
-      const map = new Map(info.asset.map(([k, v]) => [normKey(k), v]))
-      const get = (k: string) => map.get(normKey(k)) ?? ""
-      rows.push({
-        gid, modelName: info.modelName,
-        categoria: get("Categoria") || info.typeLabel,
-        nome: info.name || info.typeLabel,
-        codigo: get("Código do ativo"),
-        fabricante: get("Fabricante"),
-        valor: get("Valor (R$)"),
-        validade: get("Validade / Garantia"),
-        vida: get("Vida útil estimada"),
-        operacao: get("Operação"),
-        om: get("Plano de manutenção"),
-        status: get("Status"),
-        globalId: info.globalId,
-      })
-    }
-    return rows
-  }
-
   // ===================== ANOTAÇÕES (nota + cor + marcador "!") =====================
   /** aplica cor (ou null) + marcador. hasNote controla o "!" mesmo sem cor. */
   annotate(gid: string, color: string | null, hasNote: boolean) {
@@ -616,10 +689,10 @@ export class VrIfcEngine extends ImmersiveEngine {
     if (on) {
       if (cur) return
       const c = this.centroid.get(gid); if (!c) return
-      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.markerTex, depthTest: false, transparent: true }))
-      // sutil: ~1% da maior dimensão, limitado entre 12 e 40 cm
-      const s = Math.min(Math.max(this.maxDim * 0.01, 0.12), 0.4)
-      sp.scale.set(s, s, 1)
+      // sizeAttenuation:false = tamanho constante em TELA (sutil e sempre legível),
+      // independente do tamanho do modelo e da distância da câmera
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.markerTex, depthTest: false, transparent: true, sizeAttenuation: false }))
+      sp.scale.set(0.045, 0.045, 1)
       sp.position.copy(c)
       sp.renderOrder = 24
       sp.userData = { gid } // permite clicar no "!" p/ selecionar o elemento
@@ -627,59 +700,6 @@ export class VrIfcEngine extends ImmersiveEngine {
     } else if (cur) {
       this.markerGroup.remove(cur); cur.material.dispose(); this.markers.delete(gid)
     }
-  }
-
-  // ===================== ÂNCORA DO MARCADOR A4 (RA) =====================
-  setArPlacing(on: boolean) { this.arPlacing = on }
-  getFloorY(): number { return 0 }
-  clearAnchor() { if (this.anchorGroup) { this.scene.remove(this.anchorGroup); this.anchorGroup = null } }
-
-  private makeLabel(text: string): THREE.Sprite {
-    const c = document.createElement("canvas"); c.width = 256; c.height = 96
-    const x = c.getContext("2d")!
-    x.fillStyle = "rgba(15,20,32,.88)"
-    x.beginPath(); x.roundRect(6, 18, 244, 60, 14); x.fill()
-    x.fillStyle = "#ffd166"; x.font = "bold 44px system-ui"; x.textAlign = "center"; x.textBaseline = "middle"
-    x.fillText(text, 128, 50)
-    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false, transparent: true }))
-    sp.scale.set(0.44, 0.165, 1); sp.renderOrder = 30
-    return sp
-  }
-
-  showAnchor(pos: [number, number, number], headingDeg: number) {
-    this.clearAnchor()
-    const A4W = 0.21, A4H = 0.297
-    const g = new THREE.Group()
-
-    const sheetG = new THREE.Group()
-    const sheet = new THREE.Mesh(
-      new THREE.PlaneGeometry(A4W, A4H),
-      new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.5, side: THREE.DoubleSide })
-    )
-    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(sheet.geometry), new THREE.LineBasicMaterial({ color: 0x0891b2 }))
-    sheet.add(edges)
-    sheetG.add(sheet)
-    sheetG.position.set(pos[0], pos[1], pos[2])
-    sheetG.rotation.y = THREE.MathUtils.degToRad(headingDeg)
-    sheetG.translateZ(0.012)
-    g.add(sheetG)
-
-    const floorY = 0
-    const line = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(pos[0], floorY, pos[2]), new THREE.Vector3(pos[0], pos[1], pos[2])]),
-      new THREE.LineDashedMaterial({ color: 0xffd166, dashSize: 0.08, gapSize: 0.05, depthTest: false })
-    )
-    line.computeLineDistances(); line.renderOrder = 29
-    g.add(line)
-
-    const height = pos[1] - floorY
-    const label = this.makeLabel(height.toFixed(2).replace(".", ",") + " m")
-    label.position.set(pos[0] + 0.14, floorY + height / 2, pos[2] + 0.14)
-    g.add(label)
-
-    g.renderOrder = 25
-    this.anchorGroup = g
-    this.scene.add(g)
   }
 
   addPinSprite(id: string, pos: [number, number, number]) {

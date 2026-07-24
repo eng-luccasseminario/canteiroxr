@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Upload, Glasses, RefreshCw, Loader2, Building2, MapPin, Save, List, ChevronRight, Trash2, Image as ImageIcon, FolderOpen, EyeOff, Eye, Focus, X, Scan, Printer, Camera, Pencil, Layers, ListTree, Check, Table } from "lucide-react"
+import { Upload, Glasses, RefreshCw, Loader2, Building2, MapPin, Save, List, ChevronRight, Trash2, Image as ImageIcon, FolderOpen, EyeOff, Eye, Focus, X, Pencil, Layers, ListTree, Check, NotebookPen } from "lucide-react"
 import { VrIfcEngine, type ElementInfo, type TreeModel } from "@/engine/VrIfcEngine"
 import { Button } from "@/components/ui/button"
 import { TopBar } from "@/components/TopBar"
@@ -10,7 +10,7 @@ import { Pano360Overlay } from "@/components/Pano360Overlay"
 import { ElementInfoPanel } from "@/components/ElementInfoPanel"
 import { ModelTree } from "@/components/ModelTree"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
-import { newId, saveProject, getProject, listProjects, deleteProject, renameProject, projectModels, type Pin, type ProjectMeta, type ArAnchor, type ModelRef, type Annotation } from "@/lib/projectDb"
+import { newId, saveProject, getProject, listProjects, deleteProject, renameProject, projectModels, type Pin, type ProjectMeta, type ModelRef, type Annotation } from "@/lib/projectDb"
 
 export default function ProjectScreen({ back }: { back: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -44,10 +44,12 @@ export default function ProjectScreen({ back }: { back: () => void }) {
   const [pinsMenu, setPinsMenu] = useState(false)
   const [selCount, setSelCount] = useState(0)
   const [hiddenCount, setHiddenCount] = useState(0)
-  const [arMode, setArMode] = useState(false)
-  const [arAnchor, setArAnchor] = useState<ArAnchor | null>(null)
-  const arAnchorRef = useRef<ArAnchor | null>(null)
-  const applyAnchor = (a: ArAnchor | null) => { arAnchorRef.current = a; setArAnchor(a) }
+  // lista de observações (elementos anotados)
+  const [obsMenu, setObsMenu] = useState(false)
+  const [obsRows, setObsRows] = useState<{ gid: string; note?: string; color?: string; title: string; sub: string }[]>([])
+  const [obsLoading, setObsLoading] = useState(false)
+  // popup da observação ao tocar no marcador "!"
+  const [notePopup, setNotePopup] = useState<{ gid: string; x: number; y: number } | null>(null)
 
   // seleção de elemento (atributos + anotação)
   const [selectedGid, setSelectedGid] = useState<string | null>(null)
@@ -78,14 +80,8 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     }
     eng.onPinClick = (id) => { const p = pinsRef.current.find((x) => x.id === id); if (p) setSelected(p) }
     eng.onSelectionChange = (s, h) => { setSelCount(s); setHiddenCount(h) }
-    eng.onSelect = (gid) => setSelectedGid(gid)
-    eng.onPlaceAnchor = (pos, normal) => {
-      if (Math.abs(normal[1]) > 0.6) { showToast("A folha só pode ser fixada numa parede (superfície vertical)"); return }
-      const headingDeg = (Math.atan2(normal[0], normal[2]) * 180) / Math.PI
-      const a: ArAnchor = { pos, heading: headingDeg }
-      applyAnchor(a); eng.showAnchor(a.pos, a.heading); eng.setArPlacing(false)
-      persist(pinsRef.current)
-    }
+    eng.onSelect = (gid) => { setSelectedGid(gid); setNotePopup(null) } // qualquer toque fora fecha o popup
+    eng.onMarkerClick = (gid, x, y) => setNotePopup({ gid, x, y })
     engineRef.current = eng
     setReady(true)
     listProjects().then(setSaved)
@@ -123,7 +119,7 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     const files = Array.from(e.target.files ?? []); e.target.value = ""; if (!files.length) return
     projectId.current = newId()
     setProjectName(files.length === 1 ? files[0].name.replace(/\.[^.]+$/, "") : `Compatibilização (${files.length} modelos)`)
-    setPins([]); setSelectedGid(null); setAnnotations({}); annRef.current = {}; applyAnchor(null)
+    setPins([]); setSelectedGid(null); setAnnotations({}); annRef.current = {}
     await loadModelsList(files.map((f) => ({ name: f.name.replace(/\.[^.]+$/, ""), blob: f })))
   }
 
@@ -152,8 +148,6 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     const eng = engineRef.current
     if (eng) {
       p.pins.forEach((pin) => eng.addPinSprite(pin.id, pin.pos))
-      if (p.arAnchor) { applyAnchor(p.arAnchor); eng.showAnchor(p.arAnchor.pos, p.arAnchor.heading) }
-      else applyAnchor(null)
       for (const [gid, a] of Object.entries(ann)) eng.annotate(gid, a.color ?? null, !!a.note)
     }
   }
@@ -163,7 +157,7 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     if (!models.length || !projectId.current) return
     await saveProject({
       id: projectId.current, name: projectName, ifc: models[0].blob, models, pins: list,
-      arAnchor: arAnchorRef.current ?? undefined, annotations: annRef.current, updatedAt: Date.now(),
+      annotations: annRef.current, updatedAt: Date.now(),
     })
     listProjects().then(setSaved)
   }
@@ -217,24 +211,25 @@ export default function ProjectScreen({ back }: { back: () => void }) {
   }
   const closeInfo = () => { engineRef.current?.clearSelection() }
 
-  // ---- exportar CSV com todos os ativos estruturados do modelo ----
-  const exportCsv = async () => {
-    const eng = engineRef.current; if (!eng || !loaded) return
-    showToast("Gerando CSV dos ativos…")
-    const rows = await eng.getAllAssets()
-    const header = ["Modelo", "Categoria", "Nome", "Código", "Fabricante", "Valor (R$)", "Validade / Garantia", "Vida útil", "Operação", "Plano de O&M", "Status", "Observação", "GlobalId"]
-    const esc = (s: unknown) => `"${String(s ?? "").replace(/"/g, '""')}"`
-    const lines = [header.map(esc).join(";")]
-    for (const r of rows) {
-      const note = annRef.current[r.gid]?.note ?? ""
-      lines.push([r.modelName, r.categoria, r.nome, r.codigo, r.fabricante, r.valor, r.validade, r.vida, r.operacao, r.om, r.status, note, r.globalId].map(esc).join(";"))
+  // ---- lista de observações (todas as anotações do projeto) ----
+  const openObs = async () => {
+    const eng = engineRef.current; if (!eng) return
+    setObsMenu(true); setObsLoading(true)
+    const rows: typeof obsRows = []
+    for (const [gid, a] of Object.entries(annRef.current)) {
+      const info = await eng.getElementInfo(gid)
+      rows.push({
+        gid, note: a.note, color: a.color,
+        title: info?.name || info?.typeLabel || `Elemento ${gid}`,
+        sub: [info?.typeLabel, info?.modelName].filter(Boolean).join(" · "),
+      })
     }
-    const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url; a.download = `${(projectName || "ativos").replace(/[^\w\-.]+/g, "_")}.csv`; a.click()
-    URL.revokeObjectURL(url)
-    showToast(`CSV exportado · ${rows.length} ativos ✓`)
+    setObsRows(rows); setObsLoading(false)
+  }
+  const goToObs = (gid: string) => {
+    setObsMenu(false)
+    const eng = engineRef.current; if (!eng) return
+    eng.clearSelection(); eng.selectElement(gid); eng.focusElement(gid)
   }
 
   const enterModelVR = (pin?: Pin) => {
@@ -268,24 +263,9 @@ export default function ProjectScreen({ back }: { back: () => void }) {
     setSavedEditId(null); setSaved(await listProjects())
   }
 
-  // ---- Modo RA (marcador A4) ----
-  const startAr = () => {
-    const eng = engineRef.current; if (!eng) return
-    setArMode(true); eng.setArPlacing(true)
-    if (!arAnchorRef.current) showToast("Toque no ponto do modelo onde ficará a folha A4")
-  }
-  const exitAr = () => { engineRef.current?.setArPlacing(false); setArMode(false) }
-  const repositionAnchor = () => { engineRef.current?.setArPlacing(true); showToast("Toque na parede onde a folha A4 vai ficar") }
-  const printMarker = () => window.open(`${import.meta.env.BASE_URL}marcador-a4.html`, "_blank")
-  const openArCamera = async () => {
-    if (!arAnchorRef.current) { showToast("Toque numa parede para posicionar a folha A4 primeiro"); return }
-    try { await persist(pins) } catch (e) { console.error(e) }
-    window.location.href = `${import.meta.env.BASE_URL}ar.html?id=${encodeURIComponent(projectId.current)}`
-  }
-
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0">
-      <canvas ref={canvasRef} className="fixed inset-0 block" style={{ touchAction: "none" }} />
+      <canvas ref={canvasRef} className="fixed inset-0 block" style={{ touchAction: "none" }} onPointerDown={() => setNotePopup(null)} />
       <input ref={ifcInput} type="file" accept=".ifc" multiple hidden onChange={onIfc} />
       <input ref={addIfcInput} type="file" accept=".ifc" multiple hidden onChange={onAddIfc} />
       <input ref={panoInput} type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) setPendingPano(f) }} />
@@ -373,7 +353,7 @@ export default function ProjectScreen({ back }: { back: () => void }) {
 
       {/* Painel de ATRIBUTOS + anotação do elemento selecionado */}
       <AnimatePresence>
-        {loaded && !vrMode && !arMode && selectedGid && (
+        {loaded && !vrMode && selectedGid && (
           <ElementInfoPanel
             info={elemInfo} loading={infoLoading}
             annotation={annotations[selectedGid] ?? {}}
@@ -386,7 +366,7 @@ export default function ProjectScreen({ back }: { back: () => void }) {
       </AnimatePresence>
 
       {/* Painel de edição de vista do pino */}
-      {loaded && !vrMode && !arMode && editingPin && (
+      {loaded && !vrMode && editingPin && (
         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="glass fixed inset-x-0 bottom-0 z-20 flex flex-col gap-2 border-t border-border px-4 py-3 safe-bottom">
           <p className="text-center text-[11px] text-muted-foreground">✏️ Atualizando a vista de <b className="text-foreground">{editingPin.name}</b> · use as setas/arraste p/ enquadrar</p>
           <div className="flex gap-2">
@@ -397,7 +377,7 @@ export default function ProjectScreen({ back }: { back: () => void }) {
       )}
 
       {/* Painel inferior */}
-      {loaded && !vrMode && !arMode && !editingPin && (
+      {loaded && !vrMode && !editingPin && (
         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="glass fixed inset-x-0 bottom-0 z-20 flex flex-col gap-2 border-t border-border px-4 py-3 safe-bottom">
           <p className="text-center text-[11px] text-muted-foreground">
             {placing ? "👆 Toque no ponto do modelo para fixar o pino" : `📍 ${pins.length} pino(s) · ${modelsRef.current.length} modelo(s) · WASD/setas p/ andar · toque num elemento p/ ver atributos`}
@@ -406,37 +386,12 @@ export default function ProjectScreen({ back }: { back: () => void }) {
             <Button variant="secondary" size="icon" onClick={() => ifcInput.current?.click()} aria-label="Novo IFC (troca o projeto)"><RefreshCw className="h-4 w-4" /></Button>
             <Button variant="secondary" size="sm" onClick={() => addIfcInput.current?.click()}><Layers className="h-4 w-4" /> + Modelo</Button>
             <Button variant="secondary" size="sm" onClick={() => { refreshTree(); setTreeOpen(true) }}><ListTree className="h-4 w-4" /> Árvore</Button>
-            <Button variant="secondary" size="sm" onClick={exportCsv}><Table className="h-4 w-4" /> CSV</Button>
+            <Button variant="secondary" size="sm" onClick={openObs}><NotebookPen className="h-4 w-4" /> Obs. {Object.keys(annotations).length > 0 && `(${Object.keys(annotations).length})`}</Button>
             <Button variant={placing ? "default" : "secondary"} size="sm" onClick={togglePlacing}><MapPin className="h-4 w-4" /> {placing ? "Cancelar" : "Pino 360"}</Button>
             <Button variant="secondary" size="icon" onClick={() => setPinsMenu(true)} aria-label="Lista de pinos" disabled={!pins.length}><List className="h-4 w-4" /></Button>
-            <Button variant="secondary" size="sm" onClick={startAr}><Scan className="h-4 w-4" /> RA</Button>
             <Button variant="secondary" size="icon" onClick={() => persist(pins).then(() => showToast("Projeto salvo ✓"))} aria-label="Salvar"><Save className="h-4 w-4" /></Button>
             <Button className="flex-1" onClick={() => enterModelVR()}><Glasses className="h-5 w-5" /> VR</Button>
           </div>
-        </motion.div>
-      )}
-
-      {/* Painel do modo RA */}
-      {loaded && !vrMode && arMode && !editingPin && (
-        <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="glass fixed inset-x-0 bottom-0 z-20 flex flex-col gap-2 border-t border-border px-4 py-3 safe-bottom">
-          <div className="flex items-center gap-2 text-sm font-bold"><Scan className="h-4 w-4 text-primary" /> Modo RA · marcador A4</div>
-          <p className="text-[11px] text-muted-foreground">
-            {!arAnchor ? "👆 Toque numa PAREDE do modelo (superfície vertical) onde a folha A4 vai ficar." : "Folha A4 em escala real na parede. Imprima o marcador e confirme para escanear."}
-          </p>
-          {arAnchor && (
-            <>
-              <div className="flex items-center gap-2 rounded-lg bg-secondary/40 px-3 py-2 text-xs">
-                <span className="text-muted-foreground">📏 Altura do chão até a folha:</span>
-                <b className="text-primary">{(arAnchor.pos[1] - (engineRef.current?.getFloorY() ?? 0)).toFixed(2).replace(".", ",")} m</b>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <Button variant="secondary" size="sm" onClick={repositionAnchor}><MapPin className="h-4 w-4" /> Reposicionar</Button>
-                <Button variant="secondary" size="sm" onClick={printMarker}><Printer className="h-4 w-4" /> Marcador A4</Button>
-              </div>
-              <Button className="w-full" onClick={openArCamera}><Camera className="h-5 w-5" /> Confirmar e abrir câmera</Button>
-            </>
-          )}
-          <Button variant="ghost" size="sm" onClick={exitAr}>Sair do modo RA</Button>
         </motion.div>
       )}
 
@@ -513,19 +468,70 @@ export default function ProjectScreen({ back }: { back: () => void }) {
         </SheetContent>
       </Sheet>
 
-      {/* Sheet: árvore do modelo (disciplina/categoria + raio-X) */}
+      {/* Sheet: árvore espacial (Obra > Terreno > Edificação > Pavimento > Categoria) */}
       <Sheet open={treeOpen} onOpenChange={setTreeOpen}>
         <SheetContent side="bottom" className="mx-auto max-w-md">
-          <SheetTitle className="mb-2 flex items-center gap-2"><ListTree className="h-4 w-4 text-primary" /> Árvore do modelo</SheetTitle>
+          <SheetTitle className="mb-2 flex items-center gap-2"><ListTree className="h-4 w-4 text-primary" /> Estrutura da obra</SheetTitle>
           <ModelTree
             tree={tree}
             onModelVisible={(mi, v) => { engineRef.current?.setModelVisible(mi, v); refreshTree() }}
             onModelOpacity={(mi, op) => { engineRef.current?.setModelOpacity(mi, op); refreshTree() }}
-            onTypeVisible={(mi, t, v) => { engineRef.current?.setTypeVisible(mi, t, v); refreshTree() }}
-            onTypeOpacity={(mi, t, op) => { engineRef.current?.setTypeOpacity(mi, t, op); refreshTree() }}
+            onNodeVisible={(key, v) => { engineRef.current?.setNodeVisible(key, v); refreshTree() }}
+            onNodeOpacity={(key, op) => { engineRef.current?.setNodeOpacity(key, op); refreshTree() }}
           />
         </SheetContent>
       </Sheet>
+
+      {/* Sheet: lista de observações (elementos anotados) */}
+      <Sheet open={obsMenu} onOpenChange={setObsMenu}>
+        <SheetContent side="bottom" className="mx-auto max-w-md">
+          <SheetTitle className="mb-2 flex items-center gap-2"><NotebookPen className="h-4 w-4 text-primary" /> Observações ({obsRows.length})</SheetTitle>
+          {obsLoading ? (
+            <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Carregando…</div>
+          ) : obsRows.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Nenhuma observação ainda. Toque num elemento e use o painel de anotação (nota ou cor).</p>
+          ) : (
+            <div className="flex max-h-[52vh] flex-col gap-2 overflow-auto">
+              {obsRows.map((r) => (
+                <button key={r.gid} onClick={() => goToObs(r.gid)} className="flex items-start gap-3 rounded-lg border border-border bg-secondary/40 p-2.5 text-left hover:bg-secondary">
+                  <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full text-[11px] font-bold text-white" style={{ background: r.color ?? "#f43f5e" }}>!</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{r.title}</span>
+                    <span className="block truncate text-[11px] text-muted-foreground">{r.sub}</span>
+                    {r.note && <span className="mt-1 block text-xs text-foreground/85">{r.note}</span>}
+                  </span>
+                  <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" />
+                </button>
+              ))}
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* Popup da observação (toque no marcador "!") */}
+      {loaded && !vrMode && notePopup && (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }}
+          className="glass fixed z-30 w-60 rounded-xl border border-border p-3 shadow-xl"
+          style={{
+            left: Math.min(notePopup.x + 14, (typeof innerWidth !== "undefined" ? innerWidth : 360) - 254),
+            top: Math.max(64, Math.min(notePopup.y - 12, (typeof innerHeight !== "undefined" ? innerHeight : 640) - 170)),
+          }}
+        >
+          <div className="mb-1 flex items-center gap-2">
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-[11px] font-bold text-white" style={{ background: annotations[notePopup.gid]?.color ?? "#f43f5e" }}>!</span>
+            <span className="flex-1 text-xs font-bold">Observação</span>
+            <button onClick={() => setNotePopup(null)} aria-label="Fechar" className="grid h-6 w-6 place-items-center rounded text-muted-foreground hover:bg-secondary"><X className="h-3.5 w-3.5" /></button>
+          </div>
+          <p className="max-h-28 overflow-auto text-xs text-foreground/90">
+            {annotations[notePopup.gid]?.note || "(sem texto — elemento marcado por cor)"}
+          </p>
+          <Button
+            size="sm" variant="secondary" className="mt-2 w-full"
+            onClick={() => { const gid = notePopup.gid; setNotePopup(null); const eng = engineRef.current; if (eng) { eng.clearSelection(); eng.selectElement(gid) } }}
+          >Ver detalhes do elemento</Button>
+        </motion.div>
+      )}
 
       {/* Overlay 360 do pino */}
       {pano360 && <Pano360Overlay pins={pins} startId={pano360.id} onClose={() => setPano360(null)} />}

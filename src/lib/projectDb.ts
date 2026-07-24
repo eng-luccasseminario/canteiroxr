@@ -13,10 +13,6 @@ export interface Pin {
   thumb: string                  // miniatura da vista (dataURL JPEG)
   pano: Blob                     // foto 360 equiretangular
 }
-export interface ArAnchor {
-  pos: [number, number, number]  // ponto do modelo onde a folha A4 fica fixada
-  heading: number                // giro em torno da vertical (graus)
-}
 export interface ModelRef {
   name: string                   // nome/disciplina do modelo (ex.: "Arquitetura")
   blob: Blob                     // arquivo IFC
@@ -28,10 +24,9 @@ export interface Annotation {
 export interface Project {
   id: string
   name: string
-  ifc: Blob                      // 1º modelo — mantido p/ compatibilidade (ar.html + projetos antigos)
+  ifc: Blob                      // 1º modelo — mantido p/ compatibilidade com projetos antigos
   models?: ModelRef[]            // modelos federados (inclui o 1º). Ausente = [{ name, blob: ifc }]
   pins: Pin[]
-  arAnchor?: ArAnchor            // âncora do marcador A4 (Realidade Aumentada)
   annotations?: Record<string, Annotation> // chave "modelIndex:expressID"
   updatedAt: number
 }
