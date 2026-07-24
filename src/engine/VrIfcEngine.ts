@@ -56,6 +56,9 @@ export class VrIfcEngine extends ImmersiveEngine {
 
   // ---- modelos federados ----
   private modelIDs: number[] = []      // handles do web-ifc por índice de modelo
+  // matriz de coordenação do 1º modelo — reaplicada nos demais p/ manter o
+  // deslocamento georreferenciado relativo entre disciplinas (compatibilização)
+  private baseCoordMatrix: number[] | null = null
   private modelNames: string[] = []
   private modelVisible: boolean[] = []
   private modelOpacity: number[] = []
@@ -184,6 +187,7 @@ export class VrIfcEngine extends ImmersiveEngine {
     for (const mid of this.modelIDs) { try { this.ifcAPI.CloseModel(mid) } catch { /* ignora */ } }
     this.meshes.clear(); this.selection.clear(); this.hidden.clear()
     this.modelIDs = []; this.modelNames = []; this.modelVisible = []; this.modelOpacity = []
+    this.baseCoordMatrix = null
     this.typeOf.clear(); this.typeGids.clear(); this.typeVisible.clear(); this.typeOpacity.clear()
     this.centroid.clear(); this.paint.clear()
     for (const s of this.markers.values()) { this.markerGroup.remove(s); s.material.dispose() }
@@ -199,7 +203,12 @@ export class VrIfcEngine extends ImmersiveEngine {
     if (!this.modelGroup) { this.modelGroup = new THREE.Group(); this.scene.add(this.modelGroup) }
 
     const mi = this.modelIDs.length
-    const mid = this.ifcAPI.OpenModel(bytes, { COORDINATE_TO_ORIGIN: true })
+    // 1º modelo: leva à origem e guarda a matriz de coordenação; seguintes: mantêm
+    // as coordenadas originais e recebem a MESMA matriz — preserva o alinhamento
+    // georreferenciado entre disciplinas sem perder precisão longe da origem
+    const mid = this.ifcAPI.OpenModel(bytes, { COORDINATE_TO_ORIGIN: mi === 0 })
+    if (mi === 0) this.baseCoordMatrix = Array.from(this.ifcAPI.GetCoordinationMatrix(mid))
+    else if (this.baseCoordMatrix) this.ifcAPI.SetGeometryTransformation(mid, this.baseCoordMatrix)
     this.modelIDs.push(mid); this.modelNames.push(name)
     this.modelVisible.push(true); this.modelOpacity.push(1)
 
