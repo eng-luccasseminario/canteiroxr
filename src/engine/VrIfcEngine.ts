@@ -617,7 +617,8 @@ export class VrIfcEngine extends ImmersiveEngine {
       if (cur) return
       const c = this.centroid.get(gid); if (!c) return
       const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.markerTex, depthTest: false, transparent: true }))
-      const s = this.maxDim * 0.035
+      // sutil: ~1% da maior dimensão, limitado entre 12 e 40 cm
+      const s = Math.min(Math.max(this.maxDim * 0.01, 0.12), 0.4)
       sp.scale.set(s, s, 1)
       sp.position.copy(c)
       sp.renderOrder = 24
