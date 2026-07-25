@@ -87,6 +87,9 @@ export class VrIfcEngine extends ImmersiveEngine {
   private keyRot = 0                      // teclado setas ←→
   private btnRot = 0                      // botão de rotação (mobile)
   private keysDown = new Set<string>()
+  // velocidade suavizada (easing) p/ locomoção “caminhando” — sem partidas/paradas bruscas
+  private vel = { f: 0, r: 0, u: 0 }
+  private velRot = 0
   private _mf = new THREE.Vector3(); private _mr = new THREE.Vector3(); private _md = new THREE.Vector3()
   private _mup = new THREE.Vector3(0, 1, 0)
   private _off = new THREE.Vector3(); private _yax = new THREE.Vector3(0, 1, 0)
@@ -100,6 +103,12 @@ export class VrIfcEngine extends ImmersiveEngine {
   private hidden = new Set<string>()
   private baseMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })
   private hlMat = new THREE.MeshLambertMaterial({ color: 0xffb020, emissive: 0xff7a00, emissiveIntensity: 0.55, side: THREE.DoubleSide })
+  // vidro (janelas / panos transparentes)
+  // 1) vidro pela transparência do próprio IFC: usa a cor+alfa por vértice (frame opaco, vidro translúcido)
+  private glassVertexMat = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide, depthWrite: false })
+  // 2) vidro “forçado” p/ janelas exportadas sem transparência: tinta azulada translúcida, cara de vidro
+  private glassForcedMat = new THREE.MeshLambertMaterial({ color: 0xaad2e6, emissive: 0x0b1c26, transparent: true, opacity: 0.24, side: THREE.DoubleSide, depthWrite: false })
+  private glassKind = new Map<string, 1 | 2>()   // gid -> tipo de vidro (1=alfa do IFC, 2=forçado)
   private xrayCache = new Map<number, THREE.MeshLambertMaterial>()
   private paintCache = new Map<string, THREE.MeshLambertMaterial>()
   onSelectionChange?: (selCount: number, hiddenCount: number) => void
@@ -183,7 +192,7 @@ export class VrIfcEngine extends ImmersiveEngine {
     this.meshes.clear(); this.selection.clear(); this.hidden.clear()
     this.modelIDs = []; this.modelNames = []; this.modelVisible = []; this.modelOpacity = []
     this.baseCoordMatrix = null
-    this.typeOf.clear(); this.spatialTrees = []
+    this.typeOf.clear(); this.spatialTrees = []; this.glassKind.clear()
     this.nodeGids.clear(); this.nodeVisible.clear(); this.nodeOpacity.clear(); this.ancestorsOf.clear()
     this.centroid.clear(); this.paint.clear()
     for (const s of this.markers.values()) { this.markerGroup.remove(s); s.material.dispose() }
@@ -211,23 +220,27 @@ export class VrIfcEngine extends ImmersiveEngine {
     this.ifcAPI.StreamAllMeshes(mid, (flat: { expressID: number; geometries: { size(): number; get(i: number): { geometryExpressID: number; color: { x: number; y: number; z: number }; flatTransformation: number[] } } }) => {
       const g = flat.geometries
       const parts: THREE.BufferGeometry[] = []
+      let minAlpha = 1   // menor opacidade entre as partes (detecta vidro do próprio IFC)
       for (let i = 0; i < g.size(); i++) {
         const pg = g.get(i)
         const geo = this.ifcAPI.GetGeometry(mid, pg.geometryExpressID)
         const v = this.ifcAPI.GetVertexArray(geo.GetVertexData(), geo.GetVertexDataSize()) as Float32Array
         const ix = this.ifcAPI.GetIndexArray(geo.GetIndexData(), geo.GetIndexDataSize()) as Uint32Array
         const n = v.length / 6
-        const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), col = new Float32Array(n * 3)
-        const c = pg.color
+        const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), col = new Float32Array(n * 4)
+        // c.w = opacidade do material no IFC (1 = opaco). ANTES era ignorada → vidro virava sólido.
+        const c = pg.color as { x: number; y: number; z: number; w?: number }
+        const a = c.w == null ? 1 : c.w
+        if (a < minAlpha) minAlpha = a
         for (let k = 0; k < n; k++) {
           pos[k * 3] = v[k * 6]; pos[k * 3 + 1] = v[k * 6 + 1]; pos[k * 3 + 2] = v[k * 6 + 2]
           nor[k * 3] = v[k * 6 + 3]; nor[k * 3 + 1] = v[k * 6 + 4]; nor[k * 3 + 2] = v[k * 6 + 5]
-          col[k * 3] = c.x; col[k * 3 + 1] = c.y; col[k * 3 + 2] = c.z
+          col[k * 4] = c.x; col[k * 4 + 1] = c.y; col[k * 4 + 2] = c.z; col[k * 4 + 3] = a
         }
         const bg = new THREE.BufferGeometry()
         bg.setAttribute("position", new THREE.BufferAttribute(pos, 3))
         bg.setAttribute("normal", new THREE.BufferAttribute(nor, 3))
-        bg.setAttribute("color", new THREE.BufferAttribute(col, 3))
+        bg.setAttribute("color", new THREE.BufferAttribute(col, 4))
         bg.setIndex(new THREE.BufferAttribute(ix.slice(), 1))
         bg.applyMatrix4(new THREE.Matrix4().fromArray(pg.flatTransformation))
         parts.push(bg)
@@ -235,15 +248,19 @@ export class VrIfcEngine extends ImmersiveEngine {
       }
       if (!parts.length) return
       const merged = parts.length === 1 ? parts[0] : mergeGeometries(parts, false)
-      const mesh = new THREE.Mesh(merged, this.baseMat)
       const gid = `${mi}:${flat.expressID}`
-      mesh.userData = { gid, modelIndex: mi, expressID: flat.expressID }
-      this.modelGroup!.add(mesh)
-      this.meshes.set(gid, mesh)
       // tipo IFC (categoria) p/ a árvore
       let type = "IFCUNKNOWN"
       try { type = this.ifcAPI.GetNameFromTypeCode(this.ifcAPI.GetLineType(mid, flat.expressID)) || type } catch { /* ignora */ }
       this.typeOf.set(gid, type)
+      // decide vidro: (1) IFC já traz transparência → respeita alfa por vértice;
+      // (2) janela exportada opaca (IFCWINDOW) → força cara de vidro translúcido
+      const glass = minAlpha < 0.98 ? 1 : (type === "IFCWINDOW" ? 2 : 0)
+      if (glass) this.glassKind.set(gid, glass as 1 | 2)
+      const mesh = new THREE.Mesh(merged, glass === 2 ? this.glassForcedMat : glass === 1 ? this.glassVertexMat : this.baseMat)
+      mesh.userData = { gid, modelIndex: mi, expressID: flat.expressID }
+      this.modelGroup!.add(mesh)
+      this.meshes.set(gid, mesh)
       // centróide (posição do marcador "!")
       merged.computeBoundingBox()
       this.centroid.set(gid, merged.boundingBox!.getCenter(new THREE.Vector3()))
@@ -318,7 +335,7 @@ export class VrIfcEngine extends ImmersiveEngine {
     removeEventListener("keyup", this.onKeyUp)
     for (const mid of this.modelIDs) { try { this.ifcAPI.CloseModel(mid) } catch { /* ignora */ } }
     if (this.modelGroup) this.scene.remove(this.modelGroup)
-    this.baseMat.dispose(); this.hlMat.dispose()
+    this.baseMat.dispose(); this.hlMat.dispose(); this.glassVertexMat.dispose(); this.glassForcedMat.dispose()
     for (const m of this.xrayCache.values()) m.dispose()
     for (const m of this.paintCache.values()) m.dispose()
   }
@@ -326,10 +343,10 @@ export class VrIfcEngine extends ImmersiveEngine {
     this.controls.update()
     this.renderer.render(this.scene, this.camera)
   }
-  protected onFrame() {
+  protected onFrame(dt: number) {
     this.pollGamepad()
-    this.applyMove()
-    this.applyRotate()
+    this.applyMove(dt)
+    this.applyRotate(dt)
   }
   private pollGamepad() {
     const pads = (typeof navigator !== "undefined" && navigator.getGamepads) ? navigator.getGamepads() : []
@@ -355,6 +372,8 @@ export class VrIfcEngine extends ImmersiveEngine {
     const el = document.activeElement as HTMLElement | null
     if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return
     if (this.vrMode) return
+    // Shift = correr (acelera a locomoção). Não faz parte do WASD, só marca o estado.
+    if (e.code === "ShiftLeft" || e.code === "ShiftRight") { this.keysDown.add(e.code); return }
     const codes = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]
     if (!codes.includes(e.code)) return
     e.preventDefault()
@@ -445,8 +464,11 @@ export class VrIfcEngine extends ImmersiveEngine {
     if (this.selection.has(gid)) { m.material = this.hlMat; return }
     const color = this.paint.get(gid)
     const op = this.effectiveOpacity(gid)
+    const gk = this.glassKind.get(gid)
     if (color) m.material = this.paintMat(color, op)
-    else if (op < 0.995) m.material = this.xrayMat(op)
+    else if (op < 0.995) m.material = this.xrayMat(op)   // raio-X (opacidade da árvore) tem prioridade
+    else if (gk === 2) m.material = this.glassForcedMat
+    else if (gk === 1) m.material = this.glassVertexMat
     else m.material = this.baseMat
   }
   private refreshAll() { for (const gid of this.meshes.keys()) this.refreshMesh(gid) }
@@ -726,29 +748,42 @@ export class VrIfcEngine extends ImmersiveEngine {
   setUp(v: number) { this.moveInput.u = v }
   setRotate(v: number) { this.btnRot = v }   // botão de rotação (mobile)
   stopMove() { this.moveInput.f = this.moveInput.r = this.moveInput.u = 0; this.btnRot = 0 }
-  private applyMove() {
-    const f = Math.max(-1, Math.min(1, this.moveInput.f + this.padInput.f + this.keyMove.f))
-    const r = Math.max(-1, Math.min(1, this.moveInput.r + this.padInput.r + this.keyMove.r))
-    const u = Math.max(-1, Math.min(1, this.moveInput.u + this.padInput.u + this.keyMove.u))
-    if (!f && !r && !u) return
-    const speed = this.maxDim * 0.004
+  private isRunning() { return this.keysDown.has("ShiftLeft") || this.keysDown.has("ShiftRight") }
+  private applyMove(dt: number) {
+    // alvo de entrada (-1..1) somando toque/joystick/teclado
+    const tf = Math.max(-1, Math.min(1, this.moveInput.f + this.padInput.f + this.keyMove.f))
+    const tr = Math.max(-1, Math.min(1, this.moveInput.r + this.padInput.r + this.keyMove.r))
+    const tu = Math.max(-1, Math.min(1, this.moveInput.u + this.padInput.u + this.keyMove.u))
+    // easing exponencial: acelera/desacelera de forma suave (partida e parada macias)
+    const k = 1 - Math.exp(-dt / 0.16)
+    this.vel.f += (tf - this.vel.f) * k
+    this.vel.r += (tr - this.vel.r) * k
+    this.vel.u += (tu - this.vel.u) * k
+    if (Math.abs(this.vel.f) < 1e-3 && Math.abs(this.vel.r) < 1e-3 && Math.abs(this.vel.u) < 1e-3) {
+      this.vel.f = this.vel.r = this.vel.u = 0; return
+    }
+    // ritmo de “caminhada”; Shift acelera (correr). Independente de FPS (usa dt).
+    const perSec = this.maxDim * (this.isRunning() ? 0.34 : 0.11)
+    const step = perSec * dt
     this._mf.set(0, 0, -1).applyQuaternion(this.camera.quaternion)
     this._mr.set(1, 0, 0).applyQuaternion(this.camera.quaternion)
     this._md.set(0, 0, 0)
-    this._md.addScaledVector(this._mf, f * speed)
-    this._md.addScaledVector(this._mr, r * speed)
-    this._md.addScaledVector(this._mup, u * speed)
+    this._md.addScaledVector(this._mf, this.vel.f * step)
+    this._md.addScaledVector(this._mr, this.vel.r * step)
+    this._md.addScaledVector(this._mup, this.vel.u * step)
     this.camera.position.add(this._md)
     this.controls.target.add(this._md)
   }
   // gira a vista em torno do alvo (azimute) — teclado ←→ e botão mobile. Só no modo mono.
-  private applyRotate() {
-    if (this.vrMode) return
-    const rot = Math.max(-1, Math.min(1, this.keyRot + this.btnRot))
-    if (!rot) return
-    const speed = 0.028
+  private applyRotate(dt: number) {
+    if (this.vrMode) { this.velRot = 0; return }
+    const target = Math.max(-1, Math.min(1, this.keyRot + this.btnRot))
+    const k = 1 - Math.exp(-dt / 0.16)
+    this.velRot += (target - this.velRot) * k
+    if (Math.abs(this.velRot) < 1e-3) { this.velRot = 0; return }
+    const perSec = this.isRunning() ? 1.6 : 0.95   // rad/s (suave, como virar a cabeça)
     this._off.copy(this.camera.position).sub(this.controls.target)
-    this._off.applyAxisAngle(this._yax, rot * speed)
+    this._off.applyAxisAngle(this._yax, this.velRot * perSec * dt)
     this.camera.position.copy(this.controls.target).add(this._off)
   }
 

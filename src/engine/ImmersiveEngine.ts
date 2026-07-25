@@ -16,6 +16,7 @@ export abstract class ImmersiveEngine {
 
   private orient = 0
   private raf = 0
+  private lastFrameT = 0
   private readonly size = new THREE.Vector2()
   private readonly zee = new THREE.Vector3(0, 0, 1)
   private readonly q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5))
@@ -155,7 +156,11 @@ export abstract class ImmersiveEngine {
 
   private loop() {
     this.raf = requestAnimationFrame(this.loop)
-    this.onFrame() // por frame, nos DOIS modos (ex.: joystick / locomoção)
+    const now = performance.now()
+    // dt em segundos (limitado p/ não “teletransportar” após trocar de aba)
+    const dt = this.lastFrameT ? Math.min(0.05, (now - this.lastFrameT) / 1000) : 0.016
+    this.lastFrameT = now
+    this.onFrame(dt) // por frame, nos DOIS modos (ex.: joystick / locomoção)
     if (this.vrMode) {
       if (this.gyroActive) this.camera.quaternion.copy(this.gyroQuat)
       this.camera.updateMatrixWorld(true)
@@ -188,8 +193,8 @@ export abstract class ImmersiveEngine {
 
   // ---- hooks das subclasses ----
   protected abstract renderMono(): void
-  /** roda todo frame nos dois modos (mono e VR). Usado p/ joystick + locomoção. */
-  protected onFrame() { /* opcional */ }
+  /** roda todo frame nos dois modos (mono e VR). Usado p/ joystick + locomoção. dt em segundos. */
+  protected onFrame(_dt: number) { /* opcional */ }
   protected onEnterVR() { /* opcional */ }
   protected onExitVR() { /* opcional */ }
   protected onDispose() { /* opcional */ }

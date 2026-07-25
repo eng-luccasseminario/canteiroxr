@@ -28,6 +28,13 @@ export class PanoEngine extends ImmersiveEngine {
   private linkMode = false
   private pending: { yaw: number; pitch: number } | null = null
 
+  // auto-rotação: a vista gira sozinha; pausa quando o usuário mexe e volta após um tempo parado
+  private autoRotate = true
+  private lastInteract = 0
+  private panoLastT = 0
+  private static readonly IDLE_MS = 3500          // tempo parado até voltar a girar
+  private static readonly AUTO_DEG_PER_SEC = 4    // velocidade da rotação automática (graus/s)
+
   // transição suave (cross-fade através do preto) entre cenas 360
   private fadeTarget: number | null = null
   private fadePhase: "out" | "in" = "out"
@@ -180,18 +187,19 @@ export class PanoEngine extends ImmersiveEngine {
   private onFirstTouch() { if (!this.gyroActive) this.enableGyro() }
 
   // ---- interação ----
-  private onDown(e: PointerEvent) { if (this.vrMode) return; this.down = true; this.px = e.clientX; this.py = e.clientY }
+  private markInteract() { this.lastInteract = performance.now() }
+  private onDown(e: PointerEvent) { if (this.vrMode) return; this.down = true; this.px = e.clientX; this.py = e.clientY; this.markInteract() }
   private onMove(e: PointerEvent) {
     if (!this.down || this.vrMode) return
     this.lon -= (e.clientX - this.px) * 0.13
     this.lat = Math.max(-85, Math.min(85, this.lat + (e.clientY - this.py) * 0.13))
-    this.px = e.clientX; this.py = e.clientY; this.useGyro = false
+    this.px = e.clientX; this.py = e.clientY; this.useGyro = false; this.markInteract()
   }
-  private onUp() { this.down = false }
+  private onUp() { this.down = false; this.markInteract() }
   private onWheel(e: WheelEvent) {
     if (this.vrMode) return
     this.camera.fov = Math.max(30, Math.min(95, this.camera.fov + e.deltaY * 0.03))
-    this.camera.updateProjectionMatrix()
+    this.camera.updateProjectionMatrix(); this.markInteract()
   }
   private onClick(e: MouseEvent) {
     if (this.vrMode) { this.exitVR(); return }
@@ -225,9 +233,17 @@ export class PanoEngine extends ImmersiveEngine {
   }
   protected renderMono() {
     this.stepFade()
+    const now = performance.now()
+    const dt = this.panoLastT ? Math.min(0.05, (now - this.panoLastT) / 1000) : 0.016
+    this.panoLastT = now
     if (this.gyroActive && this.useGyro) {
       this.camera.quaternion.copy(this.gyroQuat)
     } else {
+      // gira sozinho quando ninguém está mexendo (e voltou a ficar parado)
+      if (this.autoRotate && !this.down && !this.linkMode && this.fadeTarget == null
+          && now - this.lastInteract > PanoEngine.IDLE_MS) {
+        this.lon -= PanoEngine.AUTO_DEG_PER_SEC * dt
+      }
       const phi = THREE.MathUtils.degToRad(90 - this.lat), th = THREE.MathUtils.degToRad(this.lon)
       this.camera.lookAt(Math.sin(phi) * Math.cos(th), Math.cos(phi), Math.sin(phi) * Math.sin(th))
     }
